@@ -33,6 +33,23 @@ CSRF_RE = re.compile(rb'name="csrf_token"[^>]*value="([^"]+)"')
 _session_lock = threading.Lock()
 _session_cache = {}
 
+# Circuit breaker: once a connection-level failure (timeout, refused, DNS)
+# is seen, set this so the remaining queued jobs abort immediately instead
+# of each waiting out its own timeout. Reset at the start of every batch.
+_server_down = threading.Event()
+
+
+def reset_circuit_breaker():
+    """Clear the 'server unreachable' state at the start of a new batch."""
+    _server_down.clear()
+
+
+def is_connection_error(exc):
+    """True if exc is a connection-level failure (server unreachable),
+    as opposed to an HTTP-level error (the server answered)."""
+    return isinstance(exc, (TimeoutError, ConnectionError, urllib.error.URLError)) \
+        and not isinstance(exc, urllib.error.HTTPError)
+
 
 def session_valid(opener, server_url):
     """Cheap check that a cached session is still logged in."""
@@ -392,27 +409,48 @@ def send_one_book_job(server_url, username, password, verify_ssl,
     job is marked as failed in the jobs panel. If shelf_name is set,
     the book is added to that shelf (created if missing) — including
     books skipped as duplicates, so re-sending assigns shelves.
-    """
-    notifications.put((0.1, _('Logging in…')))
-    log(f'Book: {title}')
-    opener = get_session(server_url, username, password, verify_ssl, log=log)
 
-    if abort.is_set():
-        log('Aborted.')
+    Connection-level failures (timeout, refused, DNS) trip a shared
+    circuit breaker so the remaining queued jobs skip immediately instead
+    of each waiting out its own timeout. Per-book HTTP errors do not trip
+    it: those jobs fail individually and the batch continues.
+    """
+    # If the server was already found unreachable earlier in this batch,
+    # skip without touching the network.
+    if _server_down.is_set():
+        log('Server previously unreachable in this batch — skipping.')
         return 'skipped'
 
-    notifications.put((0.4, _('Checking for duplicate…')))
-    result = 'skipped'
-    if opds_book_exists(opener, server_url, username, password, title, authors, log=log):
-        log('Already exists on server, skipping upload.')
-    else:
+    try:
+        notifications.put((0.1, _('Logging in…')))
+        log(f'Book: {title}')
+        opener = get_session(server_url, username, password, verify_ssl, log=log)
+
         if abort.is_set():
             log('Aborted.')
             return 'skipped'
-        notifications.put((0.6, _('Uploading…')))
-        status = upload_book(opener, server_url, username, password, filepath, filename)
-        log(f'Sent OK (HTTP {status})')
-        result = 'sent'
+
+        notifications.put((0.4, _('Checking for duplicate…')))
+        result = 'skipped'
+        if opds_book_exists(opener, server_url, username, password, title, authors, log=log):
+            log('Already exists on server, skipping upload.')
+        else:
+            if abort.is_set():
+                log('Aborted.')
+                return 'skipped'
+            notifications.put((0.6, _('Uploading…')))
+            status = upload_book(opener, server_url, username, password, filepath, filename)
+            log(f'Sent OK (HTTP {status})')
+            result = 'sent'
+    except Exception as e:
+        # Trip the breaker only for connection-level problems, so the rest
+        # of the batch stops hammering an unreachable server. HTTP-level
+        # errors (the server answered) fail just this one book.
+        if is_connection_error(e):
+            _server_down.set()
+            log('Server unreachable (connection error) — '
+                'stopping remaining sends in this batch.')
+        raise
 
     if shelf_name:
         notifications.put((0.85, _('Adding to shelf…')))
@@ -554,6 +592,7 @@ class SendToCalibreWebAction(InterfaceAction):
         # Pre-flight: verify the server is reachable and the credentials work
         # once, up front. Without this, a wrong password or unreachable server
         # would fail every queued job individually.
+        reset_circuit_breaker()
         try:
             opener = get_opener(verify_ssl)
             if not cw_login(opener, server_url, username, password):
@@ -561,6 +600,10 @@ class SendToCalibreWebAction(InterfaceAction):
                     self.gui, _('Login failed'),
                     _('Could not log in to Calibre-web. Check the username and '
                       'password in the plugin settings.'), show=True)
+            # Seed the shared session cache with this proven-good session so
+            # the jobs reuse it instead of each logging in again.
+            with _session_lock:
+                _session_cache[(server_url, username, password, verify_ssl)] = opener
         except Exception as e:
             return error_dialog(
                 self.gui, _('Cannot reach server'),

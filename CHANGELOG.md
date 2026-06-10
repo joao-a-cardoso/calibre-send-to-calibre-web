@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-06-10
+
+### Fixed
+- Connection-level failures (timeout, refused, DNS) now trip a per-batch
+  circuit breaker: once the server is found unreachable, the remaining queued
+  books skip immediately instead of each waiting out its own timeout. Per-book
+  HTTP errors do not trip it — those books fail individually and the batch
+  continues.
+- The successful pre-flight login now seeds the shared session cache, so the
+  per-book jobs reuse it instead of logging in again.
+
 ## [1.3.2] - 2026-06-10
 
 ### Fixed
