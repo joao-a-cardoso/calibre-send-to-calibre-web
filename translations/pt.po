@@ -1,5 +1,5 @@
 # Portuguese (Portugal) translation for Send to Calibre-web.
-# Copyright (C) 2026 Claude (Anthropic) and João Cardoso
+# Copyright (C) 2026 João Cardoso
 # This file is distributed under the same license as the plugin (GPL-3.0).
 #
 msgid ""
