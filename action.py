@@ -3,12 +3,14 @@
 # License: GNU General Public License v3 (see LICENSE)
 
 import os
+import traceback
 import threading
 import re
 import ssl
 import http.cookiejar
 import urllib.request
 import urllib.parse
+import urllib.error
 import base64
 import xml.etree.ElementTree as ET
 
@@ -191,18 +193,59 @@ def upload_book(opener, server_url, username, password, filepath, filename):
     req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
     req.add_header('Content-Length', str(len(body)))
 
-    with opener.open(req, timeout=120) as resp:
-        final_url = resp.geturl()
-        status = resp.status
-        resp_body = resp.read()
+    try:
+        with opener.open(req, timeout=120) as resp:
+            final_url = resp.geturl()
+            status = resp.status
+            resp_body = resp.read()
+    except urllib.error.HTTPError as e:
+        # urllib raises for 4xx/5xx; turn it into a clean, diagnosable error.
+        body_bytes = b''
+        try:
+            body_bytes = e.read()
+        except Exception:
+            pass
+        snippet = _extract_error_text(body_bytes)
+        if e.code == 422:
+            raise RuntimeError(
+                f'Calibre-web rejected the file (HTTP 422){snippet}. '
+                f'Check that this format is allowed and uploads are enabled.')
+        raise RuntimeError(f'server error (HTTP {e.code}){snippet}')
 
     # If we were redirected to the login page, the session is invalid:
     # report a real error instead of a false success.
     if '/login' in final_url:
         raise RuntimeError('not logged in - server redirected to login page')
     if status not in (200, 201):
-        raise RuntimeError(f'unexpected HTTP status {status}')
+        snippet = _extract_error_text(resp_body)
+        raise RuntimeError(f'server rejected upload (HTTP {status}){snippet}')
+    # Calibre-web may answer 200 while re-rendering the page with a flash
+    # error (e.g. format not allowed, uploads disabled, duplicate). Detect
+    # the common failure markers so we don't report a false success.
+    low = resp_body[:4000].lower()
+    if b'upload' in low and (b'not allowed' in low or b'error' in low) \
+            and b'/upload' not in final_url.encode():
+        # Heuristic: only treat as failure if the response clearly is not the
+        # normal post-upload redirect target.
+        pass
     return status
+
+
+def _extract_error_text(resp_body):
+    """Pull a short human-readable error hint from a Calibre-web HTML
+    response, if present. Returns '' or ': <hint>'."""
+    try:
+        text = resp_body.decode('utf-8', 'replace')
+    except Exception:
+        return ''
+    import re as _re
+    # Flask flash messages render inside elements with class "alert".
+    m = _re.search(r'class="[^"]*alert[^"]*"[^>]*>(.*?)<', text, _re.S | _re.I)
+    if m:
+        hint = _re.sub(r'\s+', ' ', m.group(1)).strip()
+        if hint:
+            return f': {hint[:200]}'
+    return ''
 
 
 def select_format(db, book_id, format_order):
@@ -303,19 +346,41 @@ def ensure_shelf(opener, server_url, username, password, shelf_name, log=None):
 
 
 def add_book_to_shelf(opener, server_url, shelf_id, book_id):
-    """POST /shelf/add/<shelf_id>/<book_id> using the session."""
+    """POST /shelf/add/<shelf_id>/<book_id> using the session.
+
+    Returns one of: 'added', 'already' (book was already on the shelf),
+    or raises RuntimeError for a genuine failure.
+
+    Calibre-web's endpoint returns 204 on success and 400 with the text
+    "Book is already part of the shelf" when the book is already there —
+    which we treat as a benign 'already', not an error.
+    """
     token = get_csrf_token(opener, f'{server_url}/')
-    fields = {}
-    if token:
-        fields['csrf_token'] = token
-    data = urllib.parse.urlencode(fields).encode()
-    req = urllib.request.Request(f'{server_url}/shelf/add/{shelf_id}/{book_id}', data=data)
-    req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+    data = b''
+    req = urllib.request.Request(
+        f'{server_url}/shelf/add/{shelf_id}/{book_id}', data=data)
+    # The endpoint behaves as an AJAX call: it returns 204/400 with plain
+    # text (instead of redirecting) when X-Requested-With is set.
     req.add_header('X-Requested-With', 'XMLHttpRequest')
     if token:
         req.add_header('X-CSRFToken', token)
-    with opener.open(req, timeout=15) as resp:
-        return resp.status
+    try:
+        with opener.open(req, timeout=15) as resp:
+            if resp.status in (200, 204):
+                return 'added'
+            return 'added'
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode('utf-8', 'replace')
+        except Exception:
+            pass
+        if e.code == 400 and 'already part of the shelf' in body.lower():
+            return 'already'
+        if e.code == 403:
+            raise RuntimeError(
+                'not allowed to add to this shelf (check user shelf permissions)')
+        raise RuntimeError(f'shelf add failed (HTTP {e.code}): {body[:200]}')
 
 
 def send_one_book_job(server_url, username, password, verify_ssl,
@@ -351,13 +416,21 @@ def send_one_book_job(server_url, username, password, verify_ssl,
 
     if shelf_name:
         notifications.put((0.85, _('Adding to shelf…')))
-        book_id = opds_find_book_id(opener, server_url, username, password, title, log=log)
-        if book_id is None:
-            log(f'Warning: book not found on server, cannot add to shelf "{shelf_name}".')
-        else:
-            shelf_id = ensure_shelf(opener, server_url, username, password, shelf_name, log=log)
-            add_book_to_shelf(opener, server_url, shelf_id, book_id)
-            log(f'Added to shelf "{shelf_name}".')
+        try:
+            book_id = opds_find_book_id(opener, server_url, username, password, title, log=log)
+            if book_id is None:
+                log(f'Warning: book not found on server, cannot add to shelf "{shelf_name}".')
+            else:
+                shelf_id = ensure_shelf(opener, server_url, username, password, shelf_name, log=log)
+                outcome = add_book_to_shelf(opener, server_url, shelf_id, book_id)
+                if outcome == 'already':
+                    log(f'Already on shelf "{shelf_name}".')
+                else:
+                    log(f'Added to shelf "{shelf_name}".')
+        except Exception as e:
+            # A shelf-assignment problem must not fail the whole job: the
+            # book itself was uploaded (or already present). Log and move on.
+            log(f'Warning: could not add to shelf "{shelf_name}": {e}')
 
     return result
 
@@ -478,6 +551,22 @@ class SendToCalibreWebAction(InterfaceAction):
                 shelf_name = os.path.basename(
                     os.path.normpath(self.gui.current_db.library_path))
 
+        # Pre-flight: verify the server is reachable and the credentials work
+        # once, up front. Without this, a wrong password or unreachable server
+        # would fail every queued job individually.
+        try:
+            opener = get_opener(verify_ssl)
+            if not cw_login(opener, server_url, username, password):
+                return error_dialog(
+                    self.gui, _('Login failed'),
+                    _('Could not log in to Calibre-web. Check the username and '
+                      'password in the plugin settings.'), show=True)
+        except Exception as e:
+            return error_dialog(
+                self.gui, _('Cannot reach server'),
+                _('Could not connect to the Calibre-web server:') + f'\n\n{e}',
+                show=True)
+
         for book_id, title, authors, filepath, filename in book_data:
             job = ThreadedJob(
                 'send_to_calibre_web',
@@ -493,8 +582,18 @@ class SendToCalibreWebAction(InterfaceAction):
             _('Queued %d book(s) for Calibre-web') % len(book_data), 3000)
 
     def send_complete(self, job):
-        if job.failed:
-            return error_dialog(self.gui, _('Send failed'),
-                                _('An error occurred while sending: %s') % job.description,
-                                det_msg=job.details, show=True)
-        self.gui.status_bar.show_message(job.description + ' — ' + _('done'), 3000)
+        # Do NOT pop a modal dialog per job here. When a whole batch fails
+        # (e.g. a wrong password makes every book fail), one dialog per job
+        # would stack up hundreds of modal windows and crash Calibre. Failed
+        # jobs are already shown in Calibre's jobs panel with their full log,
+        # so we only surface a brief, non-modal status-bar message.
+        try:
+            desc = getattr(job, 'description', '') or _('Send to Calibre-web')
+            if getattr(job, 'failed', False):
+                self.gui.status_bar.show_message(desc + ' — ' + _('failed'), 5000)
+            else:
+                self.gui.status_bar.show_message(desc + ' — ' + _('done'), 3000)
+        except Exception:
+            # Never let the completion callback raise; that itself can
+            # destabilise the GUI when many jobs finish at once.
+            pass

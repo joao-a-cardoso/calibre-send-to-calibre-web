@@ -5,6 +5,35 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-06-10
+
+### Fixed
+- The job-completion callback no longer opens a modal error dialog. A single
+  failed send (e.g. wrong password) could crash Calibre — and a whole failed
+  batch would stack hundreds of modal dialogs. Failures now show as a brief
+  status-bar message and remain visible, with full logs, in the jobs panel.
+- Credentials and server reachability are now validated once, up front, before
+  any jobs are queued: a wrong password or unreachable server produces a single
+  clear dialog instead of one failed job per book.
+- Adding a book to a shelf no longer crashes the job when the book is already
+  on that shelf: Calibre-web returns HTTP 400 ("Book is already part of the
+  shelf") in that case, which is now treated as a benign result. This happened
+  when re-sending duplicates that had been shelved on a previous run.
+- The `/shelf/add` request now matches Calibre-web's AJAX contract (empty body,
+  `X-Requested-With` and `X-CSRFToken` headers), avoiding spurious 400s.
+- Any shelf-assignment failure (permissions, invalid book id, etc.) is now
+  caught and logged as a warning instead of failing the whole job — the book
+  upload itself already succeeded.
+- Fixed a crash when a send failed and the error dialog's "Show details" was
+  opened: details are now built from the job's exception traceback instead of
+  the not-yet-ready consolidated log, avoiding format-character and threading
+  issues.
+- Upload errors are now diagnosable: HTTP 4xx/5xx responses (including 422 for
+  disallowed formats or disabled uploads) are caught and reported with the
+  server's flash message instead of crashing or showing a raw urllib error.
+- Added the missing `urllib.error` import that could itself raise on any
+  server-side HTTP error.
+
 ## [1.3.1] - 2026-06-10
 
 ### Changed

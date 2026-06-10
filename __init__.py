@@ -9,7 +9,7 @@ class SendToCalibreWebPlugin(InterfaceActionBase):
     description            = 'Send selected books to a Calibre-web server'
     supported_platforms    = ['windows', 'osx', 'linux']
     author                 = 'João Cardoso and Claude'
-    version                = (1, 3, 1)
+    version                = (1, 3, 2)
     minimum_calibre_version = (6, 0, 0)
 
     actual_plugin = 'calibre_plugins.send_to_calibre_web.action:SendToCalibreWebAction'
