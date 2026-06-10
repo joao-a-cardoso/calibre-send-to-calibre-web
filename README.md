@@ -111,4 +111,4 @@ GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
 
 ## Authors
 
-Claude (Anthropic) and João Cardoso.
+João Cardoso with Claude (Anthropic)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (C) 2026 Claude (Anthropic) and João Cardoso
+# Copyright (C) 2026 João Cardoso
 # License: GNU General Public License v3 (see LICENSE)
 
 from calibre.customize import InterfaceActionBase
