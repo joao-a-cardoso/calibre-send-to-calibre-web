@@ -83,6 +83,37 @@ The plugin is a plain zip with the source files at the root. Use the build scrip
 `build.sh` compiles any `translations/*.po` into `.mo` files (if `msgfmt` is
 available) and bundles them.
 
+## Releasing
+
+`release.sh` builds the plugin and publishes it to a GitHub release using the
+[GitHub CLI](https://cli.github.com/) (`gh`) — no GitHub Actions required.
+
+```bash
+./release.sh
+```
+
+It will:
+
+1. Prompt for the release tag, defaulting to the version in `__init__.py`
+   (e.g. `v1.3.1`), and warn if the tag and plugin version disagree.
+2. Prompt for a release title and notes; leaving the notes blank pulls the
+   matching section from `CHANGELOG.md`.
+3. Build the zip via `build.sh` and name it `send-to-calibre-web-<tag>.zip`.
+4. Create the git tag (locally and on `origin`) if it does not already exist.
+5. Create the GitHub release with the zip attached, or upload the zip to the
+   release if it already exists (`--clobber`).
+
+One-time setup:
+
+```bash
+# openSUSE
+sudo zypper install gh
+gh auth login
+```
+
+A typical release then becomes: bump `version` in `__init__.py`, add a
+`CHANGELOG.md` section, commit, and run `./release.sh`.
+
 ## Translations
 
 - `translations/send_to_calibre_web.pot` — message template.
