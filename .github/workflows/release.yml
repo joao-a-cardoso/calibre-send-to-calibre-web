@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gettext (msgfmt)
+        run: sudo apt-get update && sudo apt-get install -y gettext
+
+      - name: Verify tag matches plugin version
+        run: |
+          # Tag v1.3.0 must match version (1, 3, 0) in __init__.py.
+          TAG="${GITHUB_REF_NAME#v}"
+          PLUGIN_VER="$(python - <<'PY'
+          import re
+          src = open("__init__.py", encoding="utf-8").read()
+          m = re.search(r"version\s*=\s*\(([^)]+)\)", src)
+          print(".".join(p.strip() for p in m.group(1).split(",")))
+          PY
+          )"
+          echo "Tag version:    $TAG"
+          echo "Plugin version: $PLUGIN_VER"
+          if [ "$TAG" != "$PLUGIN_VER" ]; then
+            echo "::error::Tag $TAG does not match plugin version $PLUGIN_VER in __init__.py"
+            exit 1
+          fi
+
+      - name: Build plugin zip
+        run: |
+          chmod +x build.sh
+          ./build.sh
+          # Name the asset with the version for clarity.
+          cp send-to-calibre-web.zip "send-to-calibre-web-${GITHUB_REF_NAME}.zip"
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          # Pull the section for this version out of CHANGELOG.md, if present.
+          VER="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}" > release-notes.md
+          fi
+          echo "Notes:"; cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Send to Calibre-web ${{ github.ref_name }}"
+          body_path: release-notes.md
+          files: send-to-calibre-web-${{ github.ref_name }}.zip
+          draft: false
+          prerelease: false

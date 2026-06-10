@@ -1,0 +1,129 @@
+# Translation template for Send to Calibre-web.
+# Copyright (C) 2026 Claude (Anthropic) and João Cardoso
+# This file is distributed under the same license as the plugin (GPL-3.0).
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Send to Calibre-web 1.3.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-06-10\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Login failed: check username/password."
+msgstr ""
+
+msgid "Logging in…"
+msgstr ""
+
+msgid "Checking for duplicate…"
+msgstr ""
+
+msgid "Uploading…"
+msgstr ""
+
+msgid "Adding to shelf…"
+msgstr ""
+
+msgid "Send to Calibre-web"
+msgstr ""
+
+msgid "Send selected books to Calibre-web server"
+msgstr ""
+
+msgid "No books selected"
+msgstr ""
+
+msgid "Please select one or more books first."
+msgstr ""
+
+msgid "Not configured"
+msgstr ""
+
+msgid "Please configure the Calibre-web server URL in plugin preferences."
+msgstr ""
+
+msgid "Missing formats"
+msgstr ""
+
+msgid "The following books have no sendable format and will be skipped:"
+msgstr ""
+
+msgid "Continue?"
+msgstr ""
+
+msgid "Nothing to send"
+msgstr ""
+
+msgid "No books with a suitable format were found."
+msgstr ""
+
+msgid "Sending \"%s\" to Calibre-web"
+msgstr ""
+
+msgid "Queued %d book(s) for Calibre-web"
+msgstr ""
+
+msgid "Send failed"
+msgstr ""
+
+msgid "An error occurred while sending: %s"
+msgstr ""
+
+msgid "done"
+msgstr ""
+
+msgid "Server URL:"
+msgstr ""
+
+msgid "Username:"
+msgstr ""
+
+msgid "Password:"
+msgstr ""
+
+msgid "Verify SSL certificate:"
+msgstr ""
+
+msgid "Format preference (comma separated):"
+msgstr ""
+
+msgid "Add sent books to a shelf:"
+msgstr ""
+
+msgid "empty = use current library name"
+msgstr ""
+
+msgid "Shelf name:"
+msgstr ""
+
+msgid "Test connection"
+msgstr ""
+
+msgid "✗ Enter a server URL first."
+msgstr ""
+
+msgid "Testing…"
+msgstr ""
+
+msgid "✓ Connection OK — OPDS catalog reachable."
+msgstr ""
+
+msgid "✗ Unexpected status: HTTP %d"
+msgstr ""
+
+msgid "✗ Authentication failed (HTTP 401) — check username/password."
+msgstr ""
+
+msgid "✗ Server error: HTTP %d"
+msgstr ""
+
+msgid "✗ Connection failed: %s"
+msgstr ""
+

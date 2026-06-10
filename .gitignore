@@ -1,0 +1,19 @@
+# Build artifacts
+*.zip
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Translations compiled
+*.mo
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
