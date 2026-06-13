@@ -24,18 +24,26 @@ class ConfigWidget(QWidget):
         QWidget.__init__(self)
         self.layout = QFormLayout()
         self.setLayout(self.layout)
+        # Give the dialog a sensible minimum width so the longer fields
+        # (server URL, format list) aren't truncated.
+        self.setMinimumWidth(460)
+        # Uniform width for every text field.
+        field_width = 320
 
         self.server_url = QLineEdit(self)
         self.server_url.setText(prefs['server_url'])
+        self.server_url.setMinimumWidth(field_width)
         self.layout.addRow(QLabel(_('Server URL:')), self.server_url)
 
         self.username = QLineEdit(self)
         self.username.setText(prefs['username'])
+        self.username.setMinimumWidth(field_width)
         self.layout.addRow(QLabel(_('Username:')), self.username)
 
         self.password = QLineEdit(self)
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.password.setText(prefs['password'])
+        self.password.setMinimumWidth(field_width)
         self.layout.addRow(QLabel(_('Password:')), self.password)
 
         self.verify_ssl = QCheckBox(self)
@@ -44,6 +52,7 @@ class ConfigWidget(QWidget):
 
         self.format_order = QLineEdit(self)
         self.format_order.setText(prefs['format_order'])
+        self.format_order.setMinimumWidth(field_width)
         self.layout.addRow(QLabel(_('Format preference (comma separated):')), self.format_order)
 
         self.add_to_shelf = QCheckBox(self)
@@ -52,6 +61,7 @@ class ConfigWidget(QWidget):
 
         self.shelf_name = QLineEdit(self)
         self.shelf_name.setText(prefs['shelf_name'])
+        self.shelf_name.setMinimumWidth(field_width)
         self.shelf_name.setPlaceholderText(_('empty = use current library name'))
         self.layout.addRow(QLabel(_('Shelf name:')), self.shelf_name)
 
