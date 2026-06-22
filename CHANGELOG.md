@@ -5,11 +5,39 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-06-10
+
+### Added
+- Connection profiles: define several named server configurations and switch
+  between them. Each profile is self-contained — its own backend, server,
+  credentials, format preference, and shelf settings.
+- The settings dialog is now a two-pane profile manager (list of profiles with
+  Add / Remove / Rename / Duplicate, editing the selected profile on the right)
+  with a "Set as default" button.
+- The toolbar button gained a dropdown menu: click the icon to send to the
+  default profile, or use the menu to send to a specific profile (one-off),
+  change the default profile, or open the settings.
+- A "Test connection" button that uses the selected backend's own check.
+
+### Changed
+- Refactored to a multi-backend driver architecture. All server-specific work
+  (login, duplicate check, upload, shelves) now lives behind a `Backend`
+  interface in a new `backends` package, with Calibre-web as the first driver.
+  The job orchestration (per-book jobs, circuit breaker, session reuse) is now
+  backend-neutral, so supporting another target server is a matter of adding a
+  driver.
+- Existing single-server settings are migrated automatically into one profile
+  named "Default" on first run; no settings are lost.
+- The toolbar menu now uses Calibre's idiomatic `action_add_menu` mechanism.
+- Removed dead code, made backend re-exports explicit (`__all__`), refreshed the
+  Portuguese translation to cover all UI strings, and documented that profile
+  passwords are stored in plain text (a Calibre configuration limitation).
+
 ## [1.3.4] - 2026-06-10
 
 ### Changed
 - Widened the settings dialog and gave all input fields a uniform width, so
-the server URL and format list are no longer truncated.
+  the server URL and format list are no longer truncated.
 
 ## [1.3.3] - 2026-06-10
 

@@ -1,10 +1,10 @@
 # Portuguese (Portugal) translation for Send to Calibre-web.
-# Copyright (C) 2026 João Cardoso
+# Copyright (C) 2026 João Cardoso and Claude
 # This file is distributed under the same license as the plugin (GPL-3.0).
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: Send to Calibre-web 1.3.0\n"
+"Project-Id-Version: Send to Calibre-web 1.4.0\n"
 "POT-Creation-Date: 2026-06-10\n"
 "PO-Revision-Date: 2026-06-10\n"
 "Last-Translator: João Cardoso\n"
@@ -13,9 +13,6 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-
-msgid "Login failed: check username/password."
-msgstr "Falha na autenticação: verifique o utilizador/palavra-passe."
 
 msgid "Logging in…"
 msgstr "A autenticar…"
@@ -32,8 +29,29 @@ msgstr "A adicionar à estante…"
 msgid "Send to Calibre-web"
 msgstr "Enviar para o Calibre-web"
 
-msgid "Send selected books to Calibre-web server"
-msgstr "Enviar os livros selecionados para o servidor Calibre-web"
+msgid "Send selected books to a Calibre-web server"
+msgstr "Enviar os livros selecionados para um servidor Calibre-web"
+
+msgid "Set default profile"
+msgstr "Definir perfil predefinido"
+
+msgid "Configure profiles…"
+msgstr "Configurar perfis…"
+
+msgid "Default profile set to %s"
+msgstr "Perfil predefinido definido como %s"
+
+msgid "No profile configured"
+msgstr "Nenhum perfil configurado"
+
+msgid "Please add a profile in the plugin settings."
+msgstr "Adicione um perfil nas definições do plugin."
+
+msgid "Unknown profile"
+msgstr "Perfil desconhecido"
+
+msgid "Profile \"%s\" no longer exists."
+msgstr "O perfil \"%s\" já não existe."
 
 msgid "No books selected"
 msgstr "Nenhum livro selecionado"
@@ -44,8 +62,8 @@ msgstr "Selecione primeiro um ou mais livros."
 msgid "Not configured"
 msgstr "Não configurado"
 
-msgid "Please configure the Calibre-web server URL in plugin preferences."
-msgstr "Configure o URL do servidor Calibre-web nas preferências do plugin."
+msgid "Profile \"%s\" has no server URL."
+msgstr "O perfil \"%s\" não tem URL de servidor."
 
 msgid "Missing formats"
 msgstr "Formatos em falta"
@@ -62,20 +80,47 @@ msgstr "Nada para enviar"
 msgid "No books with a suitable format were found."
 msgstr "Não foram encontrados livros com um formato adequado."
 
-msgid "Sending \"%s\" to Calibre-web"
-msgstr "A enviar \"%s\" para o Calibre-web"
+msgid "Login failed"
+msgstr "Falha na autenticação"
 
-msgid "Queued %d book(s) for Calibre-web"
-msgstr "%d livro(s) em fila para o Calibre-web"
+msgid "Could not log in to \"%s\":"
+msgstr "Não foi possível autenticar em \"%s\":"
 
-msgid "Send failed"
-msgstr "Falha no envio"
+msgid "Cannot reach server"
+msgstr "Não é possível contactar o servidor"
 
-msgid "An error occurred while sending: %s"
-msgstr "Ocorreu um erro ao enviar: %s"
+msgid "Could not connect to \"%s\":"
+msgstr "Não foi possível ligar a \"%s\":"
+
+msgid "Sending \"%s\" to %s"
+msgstr "A enviar \"%s\" para %s"
+
+msgid "Queued %d book(s) for %s"
+msgstr "%d livro(s) em fila para %s"
+
+msgid "failed"
+msgstr "falhou"
 
 msgid "done"
 msgstr "concluído"
+
+msgid "Profiles"
+msgstr "Perfis"
+
+msgid "Add"
+msgstr "Adicionar"
+
+msgid "Remove"
+msgstr "Remover"
+
+msgid "Rename"
+msgstr "Mudar nome"
+
+msgid "Duplicate"
+msgstr "Duplicar"
+
+msgid "Backend:"
+msgstr "Servidor de destino:"
 
 msgid "Server URL:"
 msgstr "URL do servidor:"
@@ -104,23 +149,44 @@ msgstr "Nome da estante:"
 msgid "Test connection"
 msgstr "Testar ligação"
 
+msgid "Set as default"
+msgstr "Definir como predefinido"
+
+msgid "Editing profile: %s"
+msgstr "A editar o perfil: %s"
+
+msgid "Default profile (used on toolbar click): %s"
+msgstr "Perfil predefinido (usado ao clicar na barra): %s"
+
+msgid "Cannot remove"
+msgstr "Não é possível remover"
+
+msgid "At least one profile is required."
+msgstr "É necessário pelo menos um perfil."
+
+msgid "Remove profile"
+msgstr "Remover perfil"
+
+msgid "Remove profile \"%s\"?"
+msgstr "Remover o perfil \"%s\"?"
+
+msgid "Rename profile"
+msgstr "Mudar nome do perfil"
+
+msgid "New name:"
+msgstr "Novo nome:"
+
+msgid "Name in use"
+msgstr "Nome em uso"
+
+msgid "A profile with that name already exists."
+msgstr "Já existe um perfil com esse nome."
+
 msgid "✗ Enter a server URL first."
 msgstr "✗ Introduza primeiro um URL de servidor."
 
 msgid "Testing…"
 msgstr "A testar…"
-
-msgid "✓ Connection OK — OPDS catalog reachable."
-msgstr "✓ Ligação OK — catálogo OPDS acessível."
-
-msgid "✗ Unexpected status: HTTP %d"
-msgstr "✗ Estado inesperado: HTTP %d"
-
-msgid "✗ Authentication failed (HTTP 401) — check username/password."
-msgstr "✗ Falha na autenticação (HTTP 401) — verifique o utilizador/palavra-passe."
-
-msgid "✗ Server error: HTTP %d"
-msgstr "✗ Erro do servidor: HTTP %d"
 
 msgid "✗ Connection failed: %s"
 msgstr "✗ Falha na ligação: %s"

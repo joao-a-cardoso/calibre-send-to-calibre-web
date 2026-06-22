@@ -2,13 +2,22 @@
 # Copyright (C) 2026 João Cardoso
 # License: GNU General Public License v3 (see LICENSE)
 
-from qt.core import QWidget, QHBoxLayout, QLabel, QLineEdit, QCheckBox, QPushButton, QFormLayout
+from qt.core import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
+                     QCheckBox, QPushButton, QFormLayout, QComboBox,
+                     QListWidget, QGroupBox, QFrame, QInputDialog, QMessageBox)
 from calibre.utils.config import JSONConfig
+
+import calibre_plugins.send_to_calibre_web.profiles as P
 
 load_translations()
 
 prefs = JSONConfig('plugins/send_to_calibre_web')
 
+# Legacy flat defaults (kept so migration can read them on first upgrade).
+# NOTE: Calibre's JSONConfig stores these in plain text on disk, as it has no
+# secret store. The password is therefore not encrypted at rest — the same
+# limitation as Calibre's own server/device passwords. Documented in the README.
+prefs.defaults['backend']      = 'calibre-web'
 prefs.defaults['server_url']   = 'http://localhost:8083'
 prefs.defaults['username']     = ''
 prefs.defaults['password']     = ''
@@ -16,111 +25,244 @@ prefs.defaults['verify_ssl']   = True
 prefs.defaults['format_order'] = 'epub,mobi,azw3,fb2,pdf'
 prefs.defaults['add_to_shelf'] = False
 prefs.defaults['shelf_name']   = ''
+# New profile-based layout.
+prefs.defaults['profiles']        = []
+prefs.defaults['active_profile']  = ''
 
 
 class ConfigWidget(QWidget):
 
     def __init__(self):
         QWidget.__init__(self)
-        self.layout = QFormLayout()
-        self.setLayout(self.layout)
-        # Give the dialog a sensible minimum width so the longer fields
-        # (server URL, format list) aren't truncated.
-        self.setMinimumWidth(460)
-        # Uniform width for every text field.
-        field_width = 320
+        P.migrate(prefs)
+        # Work on a copy so Cancel/closing without save doesn't persist.
+        import copy
+        self._profiles = copy.deepcopy(P.get_profiles(prefs))
+        self._active = prefs.get('active_profile') or (
+            self._profiles[0]['name'] if self._profiles else '')
+        self._current_index = -1
 
-        self.server_url = QLineEdit(self)
-        self.server_url.setText(prefs['server_url'])
-        self.server_url.setMinimumWidth(field_width)
-        self.layout.addRow(QLabel(_('Server URL:')), self.server_url)
+        self.setMinimumWidth(720)
+        root = QHBoxLayout(self)
 
-        self.username = QLineEdit(self)
-        self.username.setText(prefs['username'])
-        self.username.setMinimumWidth(field_width)
-        self.layout.addRow(QLabel(_('Username:')), self.username)
+        # --- Left: profile list + buttons ---
+        left = QVBoxLayout()
+        left.addWidget(QLabel('<b>' + _('Profiles') + '</b>'))
+        self.list = QListWidget(self)
+        self.list.setMaximumWidth(180)
+        self.list.currentRowChanged.connect(self._on_select)
+        left.addWidget(self.list)
+        brow = QHBoxLayout()
+        self.btn_add = QPushButton(_('Add'))
+        self.btn_remove = QPushButton(_('Remove'))
+        self.btn_rename = QPushButton(_('Rename'))
+        self.btn_dup = QPushButton(_('Duplicate'))
+        for b in (self.btn_add, self.btn_remove, self.btn_rename, self.btn_dup):
+            brow.addWidget(b)
+        self.btn_add.clicked.connect(self._add)
+        self.btn_remove.clicked.connect(self._remove)
+        self.btn_rename.clicked.connect(self._rename)
+        self.btn_dup.clicked.connect(self._duplicate)
+        left.addLayout(brow)
+        root.addLayout(left)
 
-        self.password = QLineEdit(self)
+        line = QFrame(self)
+        line.setFrameShape(QFrame.Shape.VLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        root.addWidget(line)
+
+        # --- Right: detail editor ---
+        right = QVBoxLayout()
+        self.group = QGroupBox(self)
+        form = QFormLayout(self.group)
+        fw = 300
+
+        from calibre_plugins.send_to_calibre_web.backends import backend_choices
+        self.backend = QComboBox(self)
+        self._backend_keys = []
+        for key, label in backend_choices():
+            self.backend.addItem(label, key)
+            self._backend_keys.append(key)
+        self.backend.setMinimumWidth(fw)
+        form.addRow(QLabel(_('Backend:')), self.backend)
+
+        self.server_url = QLineEdit(self); self.server_url.setMinimumWidth(fw)
+        form.addRow(QLabel(_('Server URL:')), self.server_url)
+        self.username = QLineEdit(self); self.username.setMinimumWidth(fw)
+        form.addRow(QLabel(_('Username:')), self.username)
+        self.password = QLineEdit(self); self.password.setMinimumWidth(fw)
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password.setText(prefs['password'])
-        self.password.setMinimumWidth(field_width)
-        self.layout.addRow(QLabel(_('Password:')), self.password)
-
+        form.addRow(QLabel(_('Password:')), self.password)
         self.verify_ssl = QCheckBox(self)
-        self.verify_ssl.setChecked(prefs['verify_ssl'])
-        self.layout.addRow(QLabel(_('Verify SSL certificate:')), self.verify_ssl)
-
-        self.format_order = QLineEdit(self)
-        self.format_order.setText(prefs['format_order'])
-        self.format_order.setMinimumWidth(field_width)
-        self.layout.addRow(QLabel(_('Format preference (comma separated):')), self.format_order)
-
+        form.addRow(QLabel(_('Verify SSL certificate:')), self.verify_ssl)
+        self.format_order = QLineEdit(self); self.format_order.setMinimumWidth(fw)
+        form.addRow(QLabel(_('Format preference (comma separated):')), self.format_order)
         self.add_to_shelf = QCheckBox(self)
-        self.add_to_shelf.setChecked(prefs['add_to_shelf'])
-        self.layout.addRow(QLabel(_('Add sent books to a shelf:')), self.add_to_shelf)
-
-        self.shelf_name = QLineEdit(self)
-        self.shelf_name.setText(prefs['shelf_name'])
-        self.shelf_name.setMinimumWidth(field_width)
+        form.addRow(QLabel(_('Add sent books to a shelf:')), self.add_to_shelf)
+        self.shelf_name = QLineEdit(self); self.shelf_name.setMinimumWidth(fw)
         self.shelf_name.setPlaceholderText(_('empty = use current library name'))
-        self.layout.addRow(QLabel(_('Shelf name:')), self.shelf_name)
+        form.addRow(QLabel(_('Shelf name:')), self.shelf_name)
 
-        self.test_button = QPushButton(_('Test connection'), self)
+        trow = QHBoxLayout()
+        self.test_button = QPushButton(_('Test connection'))
         self.test_button.clicked.connect(self.test_connection)
-        self.test_result = QLabel('')
-        self.test_result.setWordWrap(True)
-        row = QHBoxLayout()
-        row.addWidget(self.test_button)
-        row.addWidget(self.test_result, 1)
-        self.layout.addRow(row)
+        self.test_result = QLabel(''); self.test_result.setWordWrap(True)
+        trow.addWidget(self.test_button); trow.addWidget(self.test_result, 1)
+        form.addRow(trow)
+        right.addWidget(self.group)
 
+        drow = QHBoxLayout()
+        self.default_label = QLabel('')
+        self.btn_set_default = QPushButton(_('Set as default'))
+        self.btn_set_default.clicked.connect(self._set_default)
+        drow.addWidget(self.default_label, 1)
+        drow.addWidget(self.btn_set_default)
+        right.addLayout(drow)
+        right.addStretch()
+        root.addLayout(right)
+
+        self._reload_list()
+
+    # --- list/detail sync ---
+    def _reload_list(self, select_name=None):
+        self.list.blockSignals(True)
+        self.list.clear()
+        for p in self._profiles:
+            self.list.addItem(p['name'])
+        self.list.blockSignals(False)
+        target = select_name or self._active
+        idx = 0
+        for i, p in enumerate(self._profiles):
+            if p['name'] == target:
+                idx = i
+                break
+        if self._profiles:
+            self.list.setCurrentRow(idx)
+        self._update_default_label()
+
+    def _flush_current(self):
+        """Save the editor fields back into the current profile dict."""
+        if 0 <= self._current_index < len(self._profiles):
+            p = self._profiles[self._current_index]
+            p['backend'] = self.backend.currentData()
+            p['server_url'] = str(self.server_url.text()).rstrip('/')
+            p['username'] = str(self.username.text())
+            p['password'] = str(self.password.text())
+            p['verify_ssl'] = self.verify_ssl.isChecked()
+            p['format_order'] = str(self.format_order.text())
+            p['add_to_shelf'] = self.add_to_shelf.isChecked()
+            p['shelf_name'] = str(self.shelf_name.text()).strip()
+
+    def _on_select(self, row):
+        # Persist the profile we're leaving, then load the new one.
+        self._flush_current()
+        self._current_index = row
+        if not (0 <= row < len(self._profiles)):
+            return
+        p = self._profiles[row]
+        self.group.setTitle(_('Editing profile: %s') % p['name'])
+        key = p.get('backend', 'calibre-web')
+        if key in self._backend_keys:
+            self.backend.setCurrentIndex(self._backend_keys.index(key))
+        self.server_url.setText(p.get('server_url', ''))
+        self.username.setText(p.get('username', ''))
+        self.password.setText(p.get('password', ''))
+        self.verify_ssl.setChecked(p.get('verify_ssl', True))
+        self.format_order.setText(p.get('format_order', 'epub,mobi,azw3,fb2,pdf'))
+        self.add_to_shelf.setChecked(p.get('add_to_shelf', False))
+        self.shelf_name.setText(p.get('shelf_name', ''))
+        self.test_result.setText('')
+
+    def _update_default_label(self):
+        self.default_label.setText(
+            _('Default profile (used on toolbar click): %s') % ('<b>%s</b>' % self._active))
+
+    # --- buttons ---
+    def _add(self):
+        name = P.unique_name(self._profiles, 'New profile')
+        self._flush_current()
+        self._profiles.append(P.new_profile(name))
+        if not self._active:
+            self._active = name
+        self._reload_list(select_name=name)
+
+    def _remove(self):
+        if len(self._profiles) <= 1:
+            QMessageBox.information(self, _('Cannot remove'),
+                                    _('At least one profile is required.'))
+            return
+        row = self.list.currentRow()
+        if not (0 <= row < len(self._profiles)):
+            return
+        name = self._profiles[row]['name']
+        if QMessageBox.question(self, _('Remove profile'),
+                _('Remove profile "%s"?') % name) != QMessageBox.StandardButton.Yes:
+            return
+        del self._profiles[row]
+        self._current_index = -1
+        if self._active == name:
+            self._active = self._profiles[0]['name']
+        self._reload_list()
+
+    def _rename(self):
+        row = self.list.currentRow()
+        if not (0 <= row < len(self._profiles)):
+            return
+        old = self._profiles[row]['name']
+        new, ok = QInputDialog.getText(self, _('Rename profile'),
+                                       _('New name:'), text=old)
+        new = (new or '').strip()
+        if not ok or not new or new == old:
+            return
+        if any(p['name'] == new for p in self._profiles):
+            QMessageBox.information(self, _('Name in use'),
+                                    _('A profile with that name already exists.'))
+            return
+        self._flush_current()
+        self._profiles[row]['name'] = new
+        if self._active == old:
+            self._active = new
+        self._reload_list(select_name=new)
+
+    def _duplicate(self):
+        row = self.list.currentRow()
+        if not (0 <= row < len(self._profiles)):
+            return
+        self._flush_current()
+        import copy
+        src = copy.deepcopy(self._profiles[row])
+        src['name'] = P.unique_name(self._profiles, src['name'] + ' copy')
+        self._profiles.append(src)
+        self._reload_list(select_name=src['name'])
+
+    def _set_default(self):
+        row = self.list.currentRow()
+        if 0 <= row < len(self._profiles):
+            self._active = self._profiles[row]['name']
+            self._update_default_label()
+
+    # --- test connection (uses the selected profile via its backend) ---
     def test_connection(self):
-        import urllib.request
-        import urllib.error
-        import base64
-        import ssl
-
-        url = str(self.server_url.text()).rstrip('/')
-        username = str(self.username.text())
-        password = str(self.password.text())
-        verify_ssl = self.verify_ssl.isChecked()
-
+        self._flush_current()
+        row = self.list.currentRow()
+        if not (0 <= row < len(self._profiles)):
+            return
+        p = self._profiles[row]
+        url = (p.get('server_url') or '').rstrip('/')
         if not url:
             self.test_result.setText(_('✗ Enter a server URL first.'))
             self.test_result.setStyleSheet('color: red;')
             return
-
         self.test_result.setText(_('Testing…'))
         self.test_result.setStyleSheet('')
         self.test_button.setEnabled(False)
         try:
-            if not verify_ssl:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-            else:
-                opener = urllib.request.build_opener()
-
-            req = urllib.request.Request(f'{url}/opds')
-            if username:
-                creds = base64.b64encode(f'{username}:{password}'.encode()).decode()
-                req.add_header('Authorization', f'Basic {creds}')
-
-            with opener.open(req, timeout=10) as resp:
-                status = resp.status
-            if status == 200:
-                self.test_result.setText(_('✓ Connection OK — OPDS catalog reachable.'))
-                self.test_result.setStyleSheet('color: green;')
-            else:
-                self.test_result.setText(_('✗ Unexpected status: HTTP %d') % status)
-                self.test_result.setStyleSheet('color: red;')
-        except urllib.error.HTTPError as e:
-            if e.code == 401:
-                self.test_result.setText(_('✗ Authentication failed (HTTP 401) — check username/password.'))
-            else:
-                self.test_result.setText(_('✗ Server error: HTTP %d') % e.code)
-            self.test_result.setStyleSheet('color: red;')
+            from calibre_plugins.send_to_calibre_web.backends import get_backend_class
+            cfg = P.profile_to_config(p)
+            backend = get_backend_class(p.get('backend', 'calibre-web'))(cfg)
+            ok, msg = backend.test_connection()
+            self.test_result.setText(('✓ ' if ok else '✗ ') + msg)
+            self.test_result.setStyleSheet('color: %s;' % ('green' if ok else 'red'))
         except Exception as e:
             self.test_result.setText(_('✗ Connection failed: %s') % e)
             self.test_result.setStyleSheet('color: red;')
@@ -128,10 +270,5 @@ class ConfigWidget(QWidget):
             self.test_button.setEnabled(True)
 
     def commit(self):
-        prefs['server_url']   = str(self.server_url.text()).rstrip('/')
-        prefs['username']     = str(self.username.text())
-        prefs['password']     = str(self.password.text())
-        prefs['verify_ssl']   = self.verify_ssl.isChecked()
-        prefs['format_order'] = str(self.format_order.text())
-        prefs['add_to_shelf'] = self.add_to_shelf.isChecked()
-        prefs['shelf_name']   = str(self.shelf_name.text()).strip()
+        self._flush_current()
+        P.save_profiles(prefs, self._profiles, active_name=self._active)

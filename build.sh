@@ -17,6 +17,8 @@ FILES=(
     __init__.py
     action.py
     config.py
+    profiles.py
+    backends
     plugin-import-name-send_to_calibre_web.txt
     images
 )

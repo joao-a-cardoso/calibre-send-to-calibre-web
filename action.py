@@ -2,17 +2,17 @@
 # Copyright (C) 2026 João Cardoso
 # License: GNU General Public License v3 (see LICENSE)
 
+"""Send to Calibre-web — Calibre interface action.
+
+This module contains only backend-neutral orchestration: selecting books,
+choosing a format, queueing one job per book, the per-batch circuit breaker,
+session reuse, and the GUI callbacks. All server-specific work is delegated to
+a Backend driver (see the ``backends`` package), so supporting another target
+server is a matter of adding a driver, not touching this file.
+"""
+
 import os
-import traceback
 import threading
-import re
-import ssl
-import http.cookiejar
-import urllib.request
-import urllib.parse
-import urllib.error
-import base64
-import xml.etree.ElementTree as ET
 
 from calibre.gui2.actions import InterfaceAction
 from calibre.gui2 import error_dialog, info_dialog, question_dialog
@@ -22,251 +22,72 @@ except ImportError:
     from calibre.gui2.jobs import ThreadedJob
 
 from calibre_plugins.send_to_calibre_web.config import prefs
+from calibre_plugins.send_to_calibre_web.backends import (
+    get_backend_class, DEFAULT_BACKEND)
+from calibre_plugins.send_to_calibre_web.backends.base import BackendError
+import calibre_plugins.send_to_calibre_web.profiles as P
 
 load_translations()
 
-CSRF_RE = re.compile(rb'name="csrf_token"[^>]*value="([^"]+)"')
 
-# Session reuse across jobs: cache one logged-in opener per
-# (server, user, password, verify_ssl) combination. Guarded by a lock
-# since ThreadedJobs may overlap in edge cases.
-_session_lock = threading.Lock()
-_session_cache = {}
-
-# Circuit breaker: once a connection-level failure (timeout, refused, DNS)
-# is seen, set this so the remaining queued jobs abort immediately instead
-# of each waiting out its own timeout. Reset at the start of every batch.
+# --- Per-batch circuit breaker ----------------------------------------------
 _server_down = threading.Event()
 
 
 def reset_circuit_breaker():
-    """Clear the 'server unreachable' state at the start of a new batch."""
     _server_down.clear()
 
 
 def is_connection_error(exc):
-    """True if exc is a connection-level failure (server unreachable),
-    as opposed to an HTTP-level error (the server answered)."""
-    return isinstance(exc, (TimeoutError, ConnectionError, urllib.error.URLError)) \
-        and not isinstance(exc, urllib.error.HTTPError)
-
-
-def session_valid(opener, server_url):
-    """Cheap check that a cached session is still logged in."""
-    try:
-        req = urllib.request.Request(f'{server_url}/')
-        with opener.open(req, timeout=10) as resp:
-            return '/login' not in resp.geturl()
-    except Exception:
+    """True for connection-level failures (server unreachable), as opposed to
+    a BackendError (the server answered with an error)."""
+    import urllib.error
+    if isinstance(exc, BackendError):
         return False
-
-
-def get_session(server_url, username, password, verify_ssl, log=None):
-    """Return a logged-in opener, reusing a cached session when valid.
-
-    Raises if login fails.
-    """
-    key = (server_url, username, password, verify_ssl)
-    with _session_lock:
-        opener = _session_cache.get(key)
-    if opener is not None:
-        if session_valid(opener, server_url):
-            if log:
-                log('Reusing existing Calibre-web session.')
-            return opener
-        with _session_lock:
-            _session_cache.pop(key, None)
-        if log:
-            log('Cached session expired, logging in again.')
-    opener = get_opener(verify_ssl)
-    if not cw_login(opener, server_url, username, password):
-        raise Exception(_('Login failed: check username/password.'))
-    if log:
-        log('Logged in to Calibre-web.')
-    with _session_lock:
-        _session_cache[key] = opener
-    return opener
-
-
-def get_opener(verify_ssl):
-    """Return a urllib opener with a cookie jar, optionally ignoring SSL errors."""
-    jar = http.cookiejar.CookieJar()
-    handlers = [urllib.request.HTTPCookieProcessor(jar)]
-    if not verify_ssl:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        handlers.append(urllib.request.HTTPSHandler(context=ctx))
-    return urllib.request.build_opener(*handlers)
-
-
-def get_csrf_token(opener, url):
-    """Fetch a page and extract the Flask-WTF csrf_token, or None."""
-    req = urllib.request.Request(url)
-    with opener.open(req, timeout=15) as resp:
-        body = resp.read()
-    m = CSRF_RE.search(body)
-    return m.group(1).decode() if m else None
-
-
-def cw_login(opener, server_url, username, password):
-    """Log into Calibre-web, establishing a session cookie.
-
-    Returns True on success. Raises on network errors.
-    """
-    token = get_csrf_token(opener, f'{server_url}/login')
-    fields = {
-        'username': username,
-        'password': password,
-        'submit': '',
-        'next': '/',
-    }
-    if token:
-        fields['csrf_token'] = token
-    data = urllib.parse.urlencode(fields).encode()
-    req = urllib.request.Request(f'{server_url}/login', data=data)
-    req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-    with opener.open(req, timeout=15) as resp:
-        final_url = resp.geturl()
-        body = resp.read()
-    # On success Calibre-web redirects away from /login.
-    if '/login' in final_url and CSRF_RE.search(body):
+    if isinstance(exc, urllib.error.HTTPError):
         return False
-    return True
+    return isinstance(exc, (TimeoutError, ConnectionError, urllib.error.URLError))
 
 
-def basic_auth_header(username, password):
-    creds = base64.b64encode(f'{username}:{password}'.encode()).decode()
-    return f'Basic {creds}'
+# --- Backend construction with session reuse --------------------------------
+_backend_lock = threading.Lock()
+_backend_cache = {}
 
 
-def opds_book_exists(opener, server_url, username, password, title, authors, log=None):
-    """Check OPDS catalog for a book with matching title. Returns True if found.
-
-    Calibre-web's search endpoint takes a 'query' parameter
-    (cps/opds.py: request.args.get("query")).
-
-    Fails open: any network/parse error returns False, so the book is
-    uploaded rather than silently skipped.
-    """
-    try:
-        query = urllib.parse.quote(title)
-        url = f'{server_url}/opds/search?query={query}'
-        req = urllib.request.Request(url)
-        if username:
-            req.add_header('Authorization', basic_auth_header(username, password))
-        with opener.open(req, timeout=15) as resp:
-            data = resp.read()
-        root = ET.fromstring(data)
-        ns = {'atom': 'http://www.w3.org/2005/Atom'}
-        entries = root.findall('atom:entry', ns)
-        title_lower = title.lower().strip()
-        for entry in entries:
-            t = entry.find('atom:title', ns)
-            if t is not None and t.text and t.text.lower().strip() == title_lower:
-                return True
-        return False
-    except Exception as e:
-        if log:
-            log(f'Warning: duplicate check failed ({e}), uploading anyway.')
-        return False
+def _backend_cache_key(cfg, backend_key):
+    return (backend_key, cfg['server_url'], cfg['username'],
+            cfg['password'], cfg['verify_ssl'])
 
 
-def upload_book(opener, server_url, username, password, filepath, filename):
-    """Upload a book file to Calibre-web via multipart POST using the
-    established session. Returns the HTTP status on success; raises
-    RuntimeError if the server bounced us to the login page (auth issue)
-    or rejected the upload.
-    """
-    url = f'{server_url}/upload'
-
-    # CSRF token from the main page (any session page carries the form token)
-    token = get_csrf_token(opener, f'{server_url}/')
-
-    # Sanitize filename for the Content-Disposition header: strip CR/LF
-    # and escape double quotes, which would otherwise corrupt the
-    # multipart body (RFC 7578).
-    safe_filename = filename.replace('\r', '').replace('\n', '').replace('"', '\\"')
-
-    boundary = '----CalibreWebPluginBoundary'
-    with open(filepath, 'rb') as f:
-        file_data = f.read()
-
-    parts = []
-    if token:
-        parts.append(
-            (f'--{boundary}\r\n'
-             f'Content-Disposition: form-data; name="csrf_token"\r\n\r\n'
-             f'{token}\r\n').encode())
-    parts.append(
-        (f'--{boundary}\r\n'
-         f'Content-Disposition: form-data; name="btn-upload"; filename="{safe_filename}"\r\n'
-         f'Content-Type: application/octet-stream\r\n\r\n').encode())
-    parts.append(file_data)
-    parts.append(f'\r\n--{boundary}--\r\n'.encode())
-    body = b''.join(parts)
-
-    req = urllib.request.Request(url, data=body)
-    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-    req.add_header('Content-Length', str(len(body)))
-
-    try:
-        with opener.open(req, timeout=120) as resp:
-            final_url = resp.geturl()
-            status = resp.status
-            resp_body = resp.read()
-    except urllib.error.HTTPError as e:
-        # urllib raises for 4xx/5xx; turn it into a clean, diagnosable error.
-        body_bytes = b''
+def get_connected_backend(backend_key, cfg, log=None):
+    """Return a connected Backend instance, reusing a cached one when its
+    session is still valid. Raises on connection/auth failure."""
+    key = _backend_cache_key(cfg, backend_key)
+    with _backend_lock:
+        backend = _backend_cache.get(key)
+    if backend is not None:
+        backend._log = log
         try:
-            body_bytes = e.read()
+            backend.connect()
+            return backend
         except Exception:
-            pass
-        snippet = _extract_error_text(body_bytes)
-        if e.code == 422:
-            raise RuntimeError(
-                f'Calibre-web rejected the file (HTTP 422){snippet}. '
-                f'Check that this format is allowed and uploads are enabled.')
-        raise RuntimeError(f'server error (HTTP {e.code}){snippet}')
-
-    # If we were redirected to the login page, the session is invalid:
-    # report a real error instead of a false success.
-    if '/login' in final_url:
-        raise RuntimeError('not logged in - server redirected to login page')
-    if status not in (200, 201):
-        snippet = _extract_error_text(resp_body)
-        raise RuntimeError(f'server rejected upload (HTTP {status}){snippet}')
-    # Calibre-web may answer 200 while re-rendering the page with a flash
-    # error (e.g. format not allowed, uploads disabled, duplicate). Detect
-    # the common failure markers so we don't report a false success.
-    low = resp_body[:4000].lower()
-    if b'upload' in low and (b'not allowed' in low or b'error' in low) \
-            and b'/upload' not in final_url.encode():
-        # Heuristic: only treat as failure if the response clearly is not the
-        # normal post-upload redirect target.
-        pass
-    return status
+            with _backend_lock:
+                _backend_cache.pop(key, None)
+    cls = get_backend_class(backend_key)
+    backend = cls(cfg, log=log)
+    backend.connect()
+    with _backend_lock:
+        _backend_cache[key] = backend
+    return backend
 
 
-def _extract_error_text(resp_body):
-    """Pull a short human-readable error hint from a Calibre-web HTML
-    response, if present. Returns '' or ': <hint>'."""
-    try:
-        text = resp_body.decode('utf-8', 'replace')
-    except Exception:
-        return ''
-    import re as _re
-    # Flask flash messages render inside elements with class "alert".
-    m = _re.search(r'class="[^"]*alert[^"]*"[^>]*>(.*?)<', text, _re.S | _re.I)
-    if m:
-        hint = _re.sub(r'\s+', ' ', m.group(1)).strip()
-        if hint:
-            return f': {hint[:200]}'
-    return ''
+def cache_backend(backend_key, cfg, backend):
+    with _backend_lock:
+        _backend_cache[_backend_cache_key(cfg, backend_key)] = backend
 
 
+# --- Format selection (Calibre-side, backend-neutral) -----------------------
 def select_format(db, book_id, format_order):
-    """Select the best available format for this book according to preference order."""
     available = db.formats(book_id)
     if not available:
         return None, None
@@ -275,148 +96,13 @@ def select_format(db, book_id, format_order):
         if fmt in available_upper:
             idx = available_upper.index(fmt)
             return available[idx], fmt
-    # fallback: first available
     return available[0], available[0].upper()
 
 
-DOWNLOAD_LINK_RE = re.compile(r'/opds/download/(\d+)/')
-SHELF_LINK_RE = re.compile(r'/opds/shelf/(\d+)')
-
-
-def opds_find_book_id(opener, server_url, username, password, title, log=None):
-    """Search OPDS for an exact title match and return its calibre-web
-    book id (parsed from the acquisition/download link), or None."""
-    try:
-        query = urllib.parse.quote(title)
-        url = f'{server_url}/opds/search?query={query}'
-        req = urllib.request.Request(url)
-        if username:
-            req.add_header('Authorization', basic_auth_header(username, password))
-        with opener.open(req, timeout=15) as resp:
-            data = resp.read()
-        root = ET.fromstring(data)
-        ns = {'atom': 'http://www.w3.org/2005/Atom'}
-        title_lower = title.lower().strip()
-        for entry in root.findall('atom:entry', ns):
-            t = entry.find('atom:title', ns)
-            if t is None or not t.text or t.text.lower().strip() != title_lower:
-                continue
-            for link in entry.findall('atom:link', ns):
-                m = DOWNLOAD_LINK_RE.search(link.get('href', ''))
-                if m:
-                    return int(m.group(1))
-        return None
-    except Exception as e:
-        if log:
-            log(f'Warning: could not find book id ({e}).')
-        return None
-
-
-def opds_list_shelves(opener, server_url, username, password):
-    """Return {shelf_name_lower: shelf_id} from /opds/shelfindex."""
-    url = f'{server_url}/opds/shelfindex'
-    req = urllib.request.Request(url)
-    if username:
-        req.add_header('Authorization', basic_auth_header(username, password))
-    with opener.open(req, timeout=15) as resp:
-        data = resp.read()
-    root = ET.fromstring(data)
-    ns = {'atom': 'http://www.w3.org/2005/Atom'}
-    shelves = {}
-    for entry in root.findall('atom:entry', ns):
-        t = entry.find('atom:title', ns)
-        eid = entry.find('atom:id', ns)
-        candidates = [eid.text if eid is not None else '']
-        for link in entry.findall('atom:link', ns):
-            candidates.append(link.get('href', ''))
-        for c in candidates:
-            m = SHELF_LINK_RE.search(c or '')
-            if m and t is not None and t.text:
-                shelves[t.text.strip().lower()] = int(m.group(1))
-                break
-    return shelves
-
-
-def ensure_shelf(opener, server_url, username, password, shelf_name, log=None):
-    """Return the shelf id for shelf_name, creating the shelf if needed."""
-    shelves = opds_list_shelves(opener, server_url, username, password)
-    sid = shelves.get(shelf_name.strip().lower())
-    if sid is not None:
-        return sid
-    # Create it (session + CSRF, like the web UI does)
-    token = get_csrf_token(opener, f'{server_url}/shelf/create')
-    fields = {'title': shelf_name}
-    if token:
-        fields['csrf_token'] = token
-    data = urllib.parse.urlencode(fields).encode()
-    req = urllib.request.Request(f'{server_url}/shelf/create', data=data)
-    req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-    with opener.open(req, timeout=15) as resp:
-        resp.read()
-    if log:
-        log(f'Created shelf "{shelf_name}".')
-    shelves = opds_list_shelves(opener, server_url, username, password)
-    sid = shelves.get(shelf_name.strip().lower())
-    if sid is None:
-        raise RuntimeError(f'shelf "{shelf_name}" not found after creation')
-    return sid
-
-
-def add_book_to_shelf(opener, server_url, shelf_id, book_id):
-    """POST /shelf/add/<shelf_id>/<book_id> using the session.
-
-    Returns one of: 'added', 'already' (book was already on the shelf),
-    or raises RuntimeError for a genuine failure.
-
-    Calibre-web's endpoint returns 204 on success and 400 with the text
-    "Book is already part of the shelf" when the book is already there —
-    which we treat as a benign 'already', not an error.
-    """
-    token = get_csrf_token(opener, f'{server_url}/')
-    data = b''
-    req = urllib.request.Request(
-        f'{server_url}/shelf/add/{shelf_id}/{book_id}', data=data)
-    # The endpoint behaves as an AJAX call: it returns 204/400 with plain
-    # text (instead of redirecting) when X-Requested-With is set.
-    req.add_header('X-Requested-With', 'XMLHttpRequest')
-    if token:
-        req.add_header('X-CSRFToken', token)
-    try:
-        with opener.open(req, timeout=15) as resp:
-            if resp.status in (200, 204):
-                return 'added'
-            return 'added'
-    except urllib.error.HTTPError as e:
-        body = ''
-        try:
-            body = e.read().decode('utf-8', 'replace')
-        except Exception:
-            pass
-        if e.code == 400 and 'already part of the shelf' in body.lower():
-            return 'already'
-        if e.code == 403:
-            raise RuntimeError(
-                'not allowed to add to this shelf (check user shelf permissions)')
-        raise RuntimeError(f'shelf add failed (HTTP {e.code}): {body[:200]}')
-
-
-def send_one_book_job(server_url, username, password, verify_ssl,
-                      title, authors, filepath, filename, shelf_name,
-                      log, abort, notifications):
-    """Send a single book; one ThreadedJob per book.
-
-    Returns 'sent' or 'skipped'. Raises on login/upload failure so the
-    job is marked as failed in the jobs panel. If shelf_name is set,
-    the book is added to that shelf (created if missing) — including
-    books skipped as duplicates, so re-sending assigns shelves.
-
-    Connection-level failures (timeout, refused, DNS) trip a shared
-    circuit breaker so the remaining queued jobs skip immediately instead
-    of each waiting out its own timeout. Per-book HTTP errors do not trip
-    it: those jobs fail individually and the batch continues.
-    """
-    # If the server was already found unreachable earlier in this batch,
-    # skip without touching the network.
+# --- Per-book job (backend-neutral) -----------------------------------------
+def send_one_book_job(backend_key, cfg, title, authors, filepath, filename,
+                      shelf_name, log, abort, notifications):
+    """Send a single book via the selected backend; one ThreadedJob per book."""
     if _server_down.is_set():
         log('Server previously unreachable in this batch — skipping.')
         return 'skipped'
@@ -424,7 +110,7 @@ def send_one_book_job(server_url, username, password, verify_ssl,
     try:
         notifications.put((0.1, _('Logging in…')))
         log(f'Book: {title}')
-        opener = get_session(server_url, username, password, verify_ssl, log=log)
+        backend = get_connected_backend(backend_key, cfg, log=log)
 
         if abort.is_set():
             log('Aborted.')
@@ -432,132 +118,134 @@ def send_one_book_job(server_url, username, password, verify_ssl,
 
         notifications.put((0.4, _('Checking for duplicate…')))
         result = 'skipped'
-        if opds_book_exists(opener, server_url, username, password, title, authors, log=log):
+        exists = backend.book_exists(title, authors) \
+            if backend.supports_duplicate_check else False
+        if exists:
             log('Already exists on server, skipping upload.')
         else:
             if abort.is_set():
                 log('Aborted.')
                 return 'skipped'
             notifications.put((0.6, _('Uploading…')))
-            status = upload_book(opener, server_url, username, password, filepath, filename)
-            log(f'Sent OK (HTTP {status})')
+            status = backend.upload(filepath, filename)
+            log(f'Sent OK ({status})')
             result = 'sent'
     except Exception as e:
-        # Trip the breaker only for connection-level problems, so the rest
-        # of the batch stops hammering an unreachable server. HTTP-level
-        # errors (the server answered) fail just this one book.
         if is_connection_error(e):
             _server_down.set()
             log('Server unreachable (connection error) — '
                 'stopping remaining sends in this batch.')
         raise
 
-    if shelf_name:
+    if shelf_name and backend.supports_shelves:
         notifications.put((0.85, _('Adding to shelf…')))
         try:
-            book_id = opds_find_book_id(opener, server_url, username, password, title, log=log)
+            book_id = backend.find_book_id(title)
             if book_id is None:
                 log(f'Warning: book not found on server, cannot add to shelf "{shelf_name}".')
             else:
-                shelf_id = ensure_shelf(opener, server_url, username, password, shelf_name, log=log)
-                outcome = add_book_to_shelf(opener, server_url, shelf_id, book_id)
+                shelf_id = backend.ensure_shelf(shelf_name)
+                outcome = backend.add_to_shelf(shelf_id, book_id)
                 if outcome == 'already':
                     log(f'Already on shelf "{shelf_name}".')
                 else:
                     log(f'Added to shelf "{shelf_name}".')
         except Exception as e:
-            # A shelf-assignment problem must not fail the whole job: the
-            # book itself was uploaded (or already present). Log and move on.
             log(f'Warning: could not add to shelf "{shelf_name}": {e}')
 
     return result
-
-
-def send_books_job(server_url, username, password, verify_ssl, format_order,
-                   book_data, log, abort, notifications):
-    """The actual work done in the background thread."""
-    opener = get_opener(verify_ssl)
-    total = len(book_data)
-    sent = 0
-    skipped = 0
-    errors = []
-
-    # Establish a Calibre-web session (the /upload endpoint requires a
-    # logged-in session; Basic auth only works for OPDS).
-    try:
-        if not cw_login(opener, server_url, username, password):
-            log('Login failed: check username/password.')
-            log('\nDone. Sent: 0, Skipped (duplicates): 0, Errors: %d' % total)
-            return
-        log('Logged in to Calibre-web.')
-    except Exception as e:
-        log(f'Login error: {e}')
-        log('\nDone. Sent: 0, Skipped (duplicates): 0, Errors: %d' % total)
-        return
-
-    for i, (book_id, title, authors, filepath, filename) in enumerate(book_data):
-        if abort.is_set():
-            log('Aborted.')
-            break
-        notifications.put((i / total, f'Sending {title}…'))
-        log(f'Checking: {title}')
-
-        if opds_book_exists(opener, server_url, username, password, title, authors, log=log):
-            log(f'  → Already exists, skipping.')
-            skipped += 1
-            continue
-
-        try:
-            status = upload_book(opener, server_url, username, password, filepath, filename)
-            log(f'  → Sent OK (HTTP {status})')
-            sent += 1
-        except Exception as e:
-            msg = f'  → Error: {e}'
-            log(msg)
-            errors.append(f'{title}: {e}')
-
-    log(f'\nDone. Sent: {sent}, Skipped (duplicates): {skipped}, Errors: {len(errors)}')
-    if errors:
-        log('\nErrors:')
-        for e in errors:
-            log(f'  {e}')
 
 
 class SendToCalibreWebAction(InterfaceAction):
 
     name = 'Send to Calibre-web'
     action_spec = (_('Send to Calibre-web'), None,
-                   _('Send selected books to Calibre-web server'), None)
+                   _('Send selected books to a Calibre-web server'), None)
     action_type = 'current'
+    action_add_menu = True
     dont_add_to = frozenset(['context-menu-device'])
 
     def genesis(self):
         icon = get_icons('images/icon.png', 'Send to Calibre-web')
         self.qaction.setIcon(icon)
-        self.qaction.triggered.connect(self.send_books)
+        self.qaction.triggered.connect(self.send_to_default)
+        # Calibre auto-creates the menu (action_add_menu = True); we populate
+        # it fresh each time it is about to show so it reflects current profiles.
+        self.menu = self.qaction.menu()
+        self.menu.aboutToShow.connect(self._build_menu)
+
+    def _build_menu(self):
+        from qt.core import QMenu
+        self.menu.clear()
+        P.migrate(prefs)
+        profiles = P.get_profiles(prefs)
+        active = prefs.get('active_profile')
+
+        # Profile names — clicking one sends to it as a one-off.
+        for p in profiles:
+            name = p['name']
+            act = self.menu.addAction(
+                ('✓ ' if name == active else '    ') + name)
+            act.triggered.connect(lambda checked=False, n=name: self.send_to_profile(n))
+
+        self.menu.addSeparator()
+        # Submenu to change the default without sending.
+        sub = QMenu(_('Set default profile'), self.menu)
+        for p in profiles:
+            name = p['name']
+            a = sub.addAction(('✓ ' if name == active else '    ') + name)
+            a.triggered.connect(lambda checked=False, n=name: self._set_default(n))
+        self.menu.addMenu(sub)
+
+        self.menu.addSeparator()
+        cfg_act = self.menu.addAction(_('Configure profiles…'))
+        cfg_act.triggered.connect(self._open_config)
+
+    def _set_default(self, name):
+        P.set_active_profile(prefs, name)
+        self.gui.status_bar.show_message(
+            _('Default profile set to %s') % name, 3000)
+
+    def _open_config(self):
+        self.interface_action_base_plugin.do_user_config(self.gui)
+
+    def send_to_default(self):
+        prof = P.get_active_profile(prefs)
+        if prof is None:
+            return error_dialog(self.gui, _('No profile configured'),
+                                _('Please add a profile in the plugin settings.'), show=True)
+        self._send_with_profile(prof)
+
+    def send_to_profile(self, name):
+        prof = P.get_profile(prefs, name)
+        if prof is None:
+            return error_dialog(self.gui, _('Unknown profile'),
+                                _('Profile "%s" no longer exists.') % name, show=True)
+        self._send_with_profile(prof)
 
     def send_books(self):
+        # Back-compat entry point: send to the active profile.
+        self.send_to_default()
+
+    def _send_with_profile(self, profile):
         rows = self.gui.library_view.selectionModel().selectedRows()
         if not rows:
             return error_dialog(self.gui, _('No books selected'),
                                 _('Please select one or more books first.'), show=True)
 
-        server_url   = prefs['server_url']
-        username     = prefs['username']
-        password     = prefs['password']
-        verify_ssl   = prefs['verify_ssl']
-        format_order = prefs['format_order']
+        cfg = P.profile_to_config(profile)
+        backend_key = profile.get('backend', DEFAULT_BACKEND)
+        format_order = profile.get('format_order', 'epub,mobi,azw3,fb2,pdf')
 
-        if not server_url:
+        if not cfg['server_url']:
             return error_dialog(self.gui, _('Not configured'),
-                                _('Please configure the Calibre-web server URL in plugin preferences.'), show=True)
+                                _('Profile "%s" has no server URL.') % profile['name'], show=True)
 
         db = self.gui.current_db.new_api
         book_ids = [self.gui.library_view.model().id(row) for row in rows]
 
         book_data = []
         missing_format = []
-
         for book_id in book_ids:
             mi = db.get_metadata(book_id)
             fmt, fmt_upper = select_format(db, book_id, format_order)
@@ -579,57 +267,42 @@ class SendToCalibreWebAction(InterfaceAction):
                 return
 
         if not book_data:
-            return info_dialog(self.gui, _('Nothing to send'), _('No books with a suitable format were found.'), show=True)
+            return info_dialog(self.gui, _('Nothing to send'),
+                               _('No books with a suitable format were found.'), show=True)
 
         shelf_name = ''
-        if prefs['add_to_shelf']:
-            shelf_name = prefs['shelf_name'].strip()
+        if profile.get('add_to_shelf'):
+            shelf_name = (profile.get('shelf_name') or '').strip()
             if not shelf_name:
-                # Default: name of the currently open Calibre library
                 shelf_name = os.path.basename(
                     os.path.normpath(self.gui.current_db.library_path))
 
-        # Pre-flight: verify the server is reachable and the credentials work
-        # once, up front. Without this, a wrong password or unreachable server
-        # would fail every queued job individually.
+        # Pre-flight: connect once, up front.
         reset_circuit_breaker()
         try:
-            opener = get_opener(verify_ssl)
-            if not cw_login(opener, server_url, username, password):
-                return error_dialog(
-                    self.gui, _('Login failed'),
-                    _('Could not log in to Calibre-web. Check the username and '
-                      'password in the plugin settings.'), show=True)
-            # Seed the shared session cache with this proven-good session so
-            # the jobs reuse it instead of each logging in again.
-            with _session_lock:
-                _session_cache[(server_url, username, password, verify_ssl)] = opener
+            backend = get_connected_backend(backend_key, cfg, log=None)
+            cache_backend(backend_key, cfg, backend)
+        except BackendError as e:
+            return error_dialog(self.gui, _('Login failed'),
+                                _('Could not log in to "%s":') % profile['name'] + f'\n\n{e}', show=True)
         except Exception as e:
-            return error_dialog(
-                self.gui, _('Cannot reach server'),
-                _('Could not connect to the Calibre-web server:') + f'\n\n{e}',
-                show=True)
+            return error_dialog(self.gui, _('Cannot reach server'),
+                                _('Could not connect to "%s":') % profile['name'] + f'\n\n{e}', show=True)
 
         for book_id, title, authors, filepath, filename in book_data:
             job = ThreadedJob(
                 'send_to_calibre_web',
-                _('Sending "%s" to Calibre-web') % title,
+                _('Sending "%s" to %s') % (title, profile['name']),
                 send_one_book_job,
-                (server_url, username, password, verify_ssl,
-                 title, authors, filepath, filename, shelf_name),
+                (backend_key, cfg, title, authors, filepath, filename, shelf_name),
                 {},
                 self.send_complete
             )
             self.gui.job_manager.run_threaded_job(job)
         self.gui.status_bar.show_message(
-            _('Queued %d book(s) for Calibre-web') % len(book_data), 3000)
+            _('Queued %d book(s) for %s') % (len(book_data), profile['name']), 3000)
 
     def send_complete(self, job):
-        # Do NOT pop a modal dialog per job here. When a whole batch fails
-        # (e.g. a wrong password makes every book fail), one dialog per job
-        # would stack up hundreds of modal windows and crash Calibre. Failed
-        # jobs are already shown in Calibre's jobs panel with their full log,
-        # so we only surface a brief, non-modal status-bar message.
         try:
             desc = getattr(job, 'description', '') or _('Send to Calibre-web')
             if getattr(job, 'failed', False):
@@ -637,6 +310,4 @@ class SendToCalibreWebAction(InterfaceAction):
             else:
                 self.gui.status_bar.show_message(desc + ' — ' + _('done'), 3000)
         except Exception:
-            # Never let the completion callback raise; that itself can
-            # destabilise the GUI when many jobs finish at once.
             pass

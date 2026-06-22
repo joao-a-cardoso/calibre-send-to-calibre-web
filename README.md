@@ -49,26 +49,44 @@ From source, see [Building](#building).
 
 ## Configuration
 
-Open **Preferences → Plugins → Send to Calibre-web → Customize plugin** and set:
+Open **Preferences → Plugins → Send to Calibre-web → Customize plugin**. The
+dialog manages one or more **connection profiles** — each a self-contained set
+of settings for a target server. Use the list on the left to Add / Remove /
+Rename / Duplicate profiles, and edit the selected profile on the right:
 
 | Setting | Description |
 |---|---|
-| Server URL | Base URL of your Calibre-web server, e.g. `http://192.168.1.50:8083`. |
-| Username / Password | A Calibre-web account with upload permission. |
+| Backend | The target server type (currently Calibre-web). |
+| Server URL | Base URL of the server, e.g. `http://192.168.1.50:8083`. |
+| Username / Password | An account with upload permission. |
 | Verify SSL certificate | Untick for self-signed HTTPS servers. |
 | Format preference | Comma-separated order, e.g. `epub,mobi,azw3,fb2,pdf`. |
 | Add sent books to a shelf | Enable shelf assignment. |
 | Shelf name | Target shelf; empty uses the current library name. |
 
-Use **Test connection** to confirm the server, credentials and TLS settings before
-sending.
+"Set as default" marks the profile used when you click the toolbar button.
+Use **Test connection** to confirm a profile's server, credentials and TLS
+settings before sending.
+
+Settings from earlier single-server versions are migrated automatically into a
+profile named "Default" the first time you open the new version.
 
 ## Usage
 
 1. Select one or more books in your Calibre library.
-2. Click the **Send to Calibre-web** toolbar button.
-3. Watch the jobs panel — one job per book. Each job logs login, duplicate check,
-   upload and (if enabled) shelf assignment.
+2. **Click the Send to Calibre-web toolbar button** to send to the default
+   profile, or **use its dropdown menu** to send to a specific profile, change
+   the default profile, or open the settings.
+3. Watch the jobs panel — one job per book. Each job logs login, duplicate
+   check, upload and (if enabled) shelf assignment.
+
+## Security note
+
+Profile passwords are stored by Calibre's configuration system in plain text on
+disk (Calibre has no secret store; this is the same limitation as Calibre's own
+server and device passwords). Anyone with read access to your Calibre
+configuration directory can read them. Use an account scoped to what the plugin
+needs rather than an administrator account where possible.
 
 ## Building
 
@@ -124,8 +142,24 @@ To add a language, copy the `.pot` to `translations/<lang>.po`, translate the
 
 ## How it works
 
+### Architecture
+
+Server-specific logic lives behind a `Backend` interface in the `backends`
+package (see `backends/base.py`). The job orchestration in `action.py` —
+selecting books, one background job per book, the per-batch circuit breaker,
+session reuse, and shelf handling — is backend-neutral and talks only to that
+interface. Adding support for another server type means writing a new `Backend`
+subclass and registering it in `backends/__init__.py`; nothing in the job logic
+changes. `CalibreWebBackend` is the first (and currently only) driver.
+
+Connection profiles (`profiles.py`) are self-contained config dicts; each
+constructs its own backend instance, so switching profiles switches the whole
+target — server, credentials, formats and shelf behaviour.
+
+### Calibre-web driver
+
 Calibre-web's upload form requires a logged-in session and a CSRF token, so the
-plugin:
+driver:
 
 1. Fetches `/login`, extracts the `csrf_token`, and posts the credentials to obtain
    a session cookie.
