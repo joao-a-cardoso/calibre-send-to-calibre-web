@@ -18,7 +18,8 @@ import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
 
-from calibre_plugins.send_to_calibre_web.backends.base import Backend, BackendError
+from calibre_plugins.send_to_calibre_web.backends.base import (
+    Backend, BackendError, PermissionDeniedError)
 
 CSRF_RE = re.compile(rb'name="csrf_token"[^>]*value="([^"]+)"')
 DOWNLOAD_LINK_RE = re.compile(r'/opds/download/(\d+)/')
@@ -202,6 +203,37 @@ class CalibreWebBackend(Backend):
             snippet = _extract_error_text(resp_body)
             raise BackendError(f'server rejected upload (HTTP {status}){snippet}')
         return f'HTTP {status}'
+
+    def delete_book(self, book_id):
+        """Delete a book via POST /delete/<book_id> (session + CSRF).
+
+        Requires the Calibre-web user to have the "Delete books" permission.
+        """
+        token = self._csrf(f'{self.server_url}/')
+        fields = {}
+        if token:
+            fields['csrf_token'] = token
+        data = urllib.parse.urlencode(fields).encode()
+        url = f'{self.server_url}/delete/{book_id}'
+        req = urllib.request.Request(url, data=data)
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        req.add_header('X-Requested-With', 'XMLHttpRequest')
+        if token:
+            req.add_header('X-CSRFToken', token)
+        try:
+            with self._opener.open(req, timeout=30) as resp:
+                final_url = resp.geturl()
+                status = resp.status
+            if '/login' in final_url:
+                raise BackendError('not logged in - server redirected to login page')
+            if status not in (200, 204):
+                raise BackendError(f'delete returned HTTP {status}')
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise PermissionDeniedError(
+                    'not allowed to delete (the Calibre-web user needs the '
+                    '"Delete books" permission)')
+            raise BackendError(f'delete failed (HTTP {e.code})')
 
     # --- shelves ---
     def find_book_id(self, title):

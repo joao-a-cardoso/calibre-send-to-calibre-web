@@ -24,7 +24,8 @@ except ImportError:
 from calibre_plugins.send_to_calibre_web.config import prefs
 from calibre_plugins.send_to_calibre_web.backends import (
     get_backend_class, DEFAULT_BACKEND)
-from calibre_plugins.send_to_calibre_web.backends.base import BackendError
+from calibre_plugins.send_to_calibre_web.backends.base import (
+    BackendError, PermissionDeniedError)
 import calibre_plugins.send_to_calibre_web.profiles as P
 
 load_translations()
@@ -33,9 +34,15 @@ load_translations()
 # --- Per-batch circuit breaker ----------------------------------------------
 _server_down = threading.Event()
 
+# Once a delete is refused for lack of permission (HTTP 403), replace can never
+# succeed for this account, so the rest of the batch falls back to "keep"
+# instead of attempting a doomed delete on every book.
+_replace_disabled = threading.Event()
+
 
 def reset_circuit_breaker():
     _server_down.clear()
+    _replace_disabled.clear()
 
 
 def is_connection_error(exc):
@@ -101,8 +108,13 @@ def select_format(db, book_id, format_order):
 
 # --- Per-book job (backend-neutral) -----------------------------------------
 def send_one_book_job(backend_key, cfg, title, authors, filepath, filename,
-                      shelf_name, log, abort, notifications):
-    """Send a single book via the selected backend; one ThreadedJob per book."""
+                      shelf_name, duplicate_policy, log, abort, notifications):
+    """Send a single book via the selected backend; one ThreadedJob per book.
+
+    ``duplicate_policy`` controls what happens when the book already exists on
+    the server: 'keep' skips it (default); 'replace' deletes the existing copy
+    then uploads the new one.
+    """
     if _server_down.is_set():
         log('Server previously unreachable in this batch — skipping.')
         return 'skipped'
@@ -120,9 +132,49 @@ def send_one_book_job(backend_key, cfg, title, authors, filepath, filename,
         result = 'skipped'
         exists = backend.book_exists(title, authors) \
             if backend.supports_duplicate_check else False
-        if exists:
+
+        # Decide the effective policy for this book. "replace" downgrades to
+        # "keep" if replace was already disabled batch-wide by a prior 403.
+        effective_policy = duplicate_policy
+        if effective_policy == 'replace' and _replace_disabled.is_set():
+            log('Replace disabled earlier this batch (no delete permission) — '
+                'keeping existing.')
+            effective_policy = 'keep'
+
+        if exists and effective_policy != 'replace':
+            # 'keep' (default): leave the existing copy untouched.
             log('Already exists on server, skipping upload.')
+        elif exists and effective_policy == 'replace':
+            # Try to delete the old copy, then upload. On failure, fall back to
+            # keeping the existing copy (never lose what's already there).
+            book_id = backend.find_book_id(title)
+            if book_id is None:
+                log('Exists but could not locate it to replace; keeping existing.')
+            else:
+                try:
+                    notifications.put((0.5, _('Replacing existing…')))
+                    log(f'Replacing existing copy (deleting book {book_id}).')
+                    backend.delete_book(book_id)
+                except PermissionDeniedError as e:
+                    # Account-wide: disable replace for the rest of the batch.
+                    _replace_disabled.set()
+                    log(f'Cannot replace ({e}). Keeping existing, and falling '
+                        f'back to "keep" for the rest of this batch.')
+                    book_id = None  # signal: do not upload
+                except BackendError as e:
+                    # Per-book failure: keep this one, keep trying others.
+                    log(f'Could not delete existing copy ({e}); keeping existing.')
+                    book_id = None  # signal: do not upload
+            if book_id is not None:
+                if abort.is_set():
+                    log('Aborted.')
+                    return 'skipped'
+                notifications.put((0.6, _('Uploading…')))
+                status = backend.upload(filepath, filename)
+                log(f'Sent OK ({status})')
+                result = 'replaced'
         else:
+            # New book: upload.
             if abort.is_set():
                 log('Aborted.')
                 return 'skipped'
@@ -277,6 +329,8 @@ class SendToCalibreWebAction(InterfaceAction):
                 shelf_name = os.path.basename(
                     os.path.normpath(self.gui.current_db.library_path))
 
+        duplicate_policy = profile.get('duplicate_policy', 'keep')
+
         # Pre-flight: connect once, up front.
         reset_circuit_breaker()
         try:
@@ -289,12 +343,31 @@ class SendToCalibreWebAction(InterfaceAction):
             return error_dialog(self.gui, _('Cannot reach server'),
                                 _('Could not connect to "%s":') % profile['name'] + f'\n\n{e}', show=True)
 
+        # If a saved profile asks for "replace"/"ask" but the backend can't
+        # delete, downgrade to "keep" silently (the job logs it).
+        if duplicate_policy in ('replace', 'ask') and not getattr(backend, 'supports_replace', False):
+            duplicate_policy = 'keep'
+
+        # "Always ask": one dialog up front decides whether duplicates are
+        # replaced or kept for this send. The per-book duplicate check during
+        # the send then applies that choice to whichever books actually exist.
+        if duplicate_policy == 'ask':
+            answer = question_dialog(
+                self.gui, _('Replace existing books?'),
+                _('If any of the selected books already exist on "%s", '
+                  'replace them?') % profile['name'] + '\n\n' +
+                _('Yes — replace duplicates (delete the existing copy then '
+                  'upload).\nNo — keep the existing copies and skip those.'),
+                show_copy_button=False)
+            duplicate_policy = 'replace' if answer else 'keep'
+
         for book_id, title, authors, filepath, filename in book_data:
             job = ThreadedJob(
                 'send_to_calibre_web',
                 _('Sending "%s" to %s') % (title, profile['name']),
                 send_one_book_job,
-                (backend_key, cfg, title, authors, filepath, filename, shelf_name),
+                (backend_key, cfg, title, authors, filepath, filename,
+                 shelf_name, duplicate_policy),
                 {},
                 self.send_complete
             )

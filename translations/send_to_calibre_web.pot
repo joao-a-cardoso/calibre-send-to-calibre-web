@@ -5,9 +5,8 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: Send to Calibre-web 1.4.0\n"
-"Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-10\n"
+"Project-Id-Version: Send to Calibre-web 1.5.0\n"
+"POT-Creation-Date: 2026-06-28\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -20,6 +19,9 @@ msgid "Logging in…"
 msgstr ""
 
 msgid "Checking for duplicate…"
+msgstr ""
+
+msgid "Replacing existing…"
 msgstr ""
 
 msgid "Uploading…"
@@ -94,6 +96,9 @@ msgstr ""
 msgid "Could not connect to \"%s\":"
 msgstr ""
 
+msgid "Replace existing books?"
+msgstr ""
+
 msgid "Sending \"%s\" to %s"
 msgstr ""
 
@@ -139,6 +144,9 @@ msgstr ""
 msgid "Format preference (comma separated):"
 msgstr ""
 
+msgid "If book already exists:"
+msgstr ""
+
 msgid "Add sent books to a shelf:"
 msgstr ""
 
@@ -155,6 +163,15 @@ msgid "Set as default"
 msgstr ""
 
 msgid "Editing profile: %s"
+msgstr ""
+
+msgid "Keep existing (skip)"
+msgstr ""
+
+msgid "Replace existing (delete then upload)"
+msgstr ""
+
+msgid "Always ask before replacing"
 msgstr ""
 
 msgid "Default profile (used on toolbar click): %s"

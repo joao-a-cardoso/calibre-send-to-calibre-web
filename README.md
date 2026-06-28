@@ -61,6 +61,7 @@ Rename / Duplicate profiles, and edit the selected profile on the right:
 | Username / Password | An account with upload permission. |
 | Verify SSL certificate | Untick for self-signed HTTPS servers. |
 | Format preference | Comma-separated order, e.g. `epub,mobi,azw3,fb2,pdf`. |
+| If book already exists | **Keep existing** (skip), **Replace existing** (delete then upload), or **Always ask before replacing** (one prompt per send). Replace and Always ask are only offered for backends that support deletion. |
 | Add sent books to a shelf | Enable shelf assignment. |
 | Shelf name | Target shelf; empty uses the current library name. |
 
@@ -79,6 +80,16 @@ profile named "Default" the first time you open the new version.
    the default profile, or open the settings.
 3. Watch the jobs panel — one job per book. Each job logs login, duplicate
    check, upload and (if enabled) shelf assignment.
+
+## Replacing existing books
+
+With **Replace existing** selected, a book that already exists on the server is
+deleted and re-uploaded. On Calibre-web this needs the account to have the
+**Delete books** permission. If a delete is refused for lack of permission
+(HTTP 403), Replace is disabled for the rest of that send and the existing
+copies are kept; other delete errors fall back to keeping just that book. The
+existing copy is never lost to a failed replace, and every fallback is recorded
+in the job log.
 
 ## Security note
 

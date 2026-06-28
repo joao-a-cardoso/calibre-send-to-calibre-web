@@ -22,6 +22,13 @@ class BackendError(Exception):
     can trip its circuit breaker."""
 
 
+class PermissionDeniedError(BackendError):
+    """Raised when the server refuses an operation because the account lacks
+    permission (HTTP 403). Distinguished from a generic BackendError so the
+    orchestration can react account-wide (e.g. disable Replace for the whole
+    batch rather than retrying a doomed delete on every book)."""
+
+
 class Backend:
     """Abstract base for a target-server driver.
 
@@ -41,6 +48,9 @@ class Backend:
     # --- Capability flags (override in subclasses as needed) ---
     supports_duplicate_check = True
     supports_shelves = True
+    #: Whether the backend can delete an existing book (needed for the
+    #: "Replace existing" duplicate policy).
+    supports_replace = True
 
     def __init__(self, config, log=None):
         """``config`` is a dict of backend-specific settings; ``log`` is an
@@ -73,6 +83,12 @@ class Backend:
     def upload(self, filepath, filename):
         """Upload the file. Return a short status string on success; raise
         BackendError (or let a connection error propagate) on failure."""
+        raise NotImplementedError
+
+    def delete_book(self, book_id):
+        """Delete a book by its server-side id (used by the 'Replace existing'
+        policy). Return None on success; raise BackendError on failure.
+        Only called when supports_replace is True."""
         raise NotImplementedError
 
     # --- Shelves (only called when supports_shelves is True) ---

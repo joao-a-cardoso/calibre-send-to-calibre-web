@@ -4,9 +4,9 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: Send to Calibre-web 1.4.0\n"
-"POT-Creation-Date: 2026-06-10\n"
-"PO-Revision-Date: 2026-06-10\n"
+"Project-Id-Version: Send to Calibre-web 1.5.0\n"
+"POT-Creation-Date: 2026-06-28\n"
+"PO-Revision-Date: 2026-06-28\n"
 "Last-Translator: João Cardoso\n"
 "Language-Team: Portuguese (Portugal)\n"
 "Language: pt_PT\n"
@@ -19,6 +19,9 @@ msgstr "A autenticar…"
 
 msgid "Checking for duplicate…"
 msgstr "A verificar duplicados…"
+
+msgid "Replacing existing…"
+msgstr "A substituir o existente…"
 
 msgid "Uploading…"
 msgstr "A enviar…"
@@ -92,6 +95,9 @@ msgstr "Não é possível contactar o servidor"
 msgid "Could not connect to \"%s\":"
 msgstr "Não foi possível ligar a \"%s\":"
 
+msgid "Replace existing books?"
+msgstr "Substituir livros existentes?"
+
 msgid "Sending \"%s\" to %s"
 msgstr "A enviar \"%s\" para %s"
 
@@ -137,6 +143,9 @@ msgstr "Verificar certificado SSL:"
 msgid "Format preference (comma separated):"
 msgstr "Preferência de formatos (separados por vírgula):"
 
+msgid "If book already exists:"
+msgstr "Se o livro já existir:"
+
 msgid "Add sent books to a shelf:"
 msgstr "Adicionar livros enviados a uma estante:"
 
@@ -154,6 +163,15 @@ msgstr "Definir como predefinido"
 
 msgid "Editing profile: %s"
 msgstr "A editar o perfil: %s"
+
+msgid "Keep existing (skip)"
+msgstr "Manter o existente (ignorar)"
+
+msgid "Replace existing (delete then upload)"
+msgstr "Substituir o existente (apagar e enviar)"
+
+msgid "Always ask before replacing"
+msgstr "Perguntar sempre antes de substituir"
 
 msgid "Default profile (used on toolbar click): %s"
 msgstr "Perfil predefinido (usado ao clicar na barra): %s"

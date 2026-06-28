@@ -15,6 +15,7 @@ action code never touch the raw pref keys directly.
 PROFILE_FIELDS = (
     'backend', 'server_url', 'username', 'password',
     'verify_ssl', 'format_order', 'add_to_shelf', 'shelf_name',
+    'duplicate_policy',
 )
 
 DEFAULTS = {
@@ -26,6 +27,10 @@ DEFAULTS = {
     'format_order': 'epub,mobi,azw3,fb2,pdf',
     'add_to_shelf': False,
     'shelf_name': '',
+    # 'keep' = skip if the book already exists (default, previous behaviour);
+    # 'replace' = delete the existing copy then upload the new one;
+    # 'ask' = prompt once before sending whether to replace duplicates.
+    'duplicate_policy': 'keep',
 }
 
 

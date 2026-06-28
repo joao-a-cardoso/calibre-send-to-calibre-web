@@ -97,6 +97,12 @@ class ConfigWidget(QWidget):
         form.addRow(QLabel(_('Verify SSL certificate:')), self.verify_ssl)
         self.format_order = QLineEdit(self); self.format_order.setMinimumWidth(fw)
         form.addRow(QLabel(_('Format preference (comma separated):')), self.format_order)
+        self.duplicate_policy = QComboBox(self)
+        self.duplicate_policy.setMinimumWidth(fw)
+        form.addRow(QLabel(_('If book already exists:')), self.duplicate_policy)
+        # The Replace option is only offered when the selected backend supports
+        # deletion. Rebuilt whenever the backend changes.
+        self.backend.currentIndexChanged.connect(self._refresh_policy_options)
         self.add_to_shelf = QCheckBox(self)
         form.addRow(QLabel(_('Add sent books to a shelf:')), self.add_to_shelf)
         self.shelf_name = QLineEdit(self); self.shelf_name.setMinimumWidth(fw)
@@ -150,6 +156,7 @@ class ConfigWidget(QWidget):
             p['password'] = str(self.password.text())
             p['verify_ssl'] = self.verify_ssl.isChecked()
             p['format_order'] = str(self.format_order.text())
+            p['duplicate_policy'] = self.duplicate_policy.currentData()
             p['add_to_shelf'] = self.add_to_shelf.isChecked()
             p['shelf_name'] = str(self.shelf_name.text()).strip()
 
@@ -169,9 +176,37 @@ class ConfigWidget(QWidget):
         self.password.setText(p.get('password', ''))
         self.verify_ssl.setChecked(p.get('verify_ssl', True))
         self.format_order.setText(p.get('format_order', 'epub,mobi,azw3,fb2,pdf'))
+        # Rebuild policy choices for this profile's backend, then select the
+        # saved policy (falling back to 'keep' if it's no longer offered).
+        self._refresh_policy_options(select=p.get('duplicate_policy', 'keep'))
         self.add_to_shelf.setChecked(p.get('add_to_shelf', False))
         self.shelf_name.setText(p.get('shelf_name', ''))
         self.test_result.setText('')
+
+    def _refresh_policy_options(self, *args, select=None):
+        """Populate the duplicate-policy dropdown based on whether the
+        currently selected backend supports replacing (deleting) books."""
+        from calibre_plugins.send_to_calibre_web.backends import get_backend_class
+        key = self.backend.currentData() or 'calibre-web'
+        backend_cls = get_backend_class(key)
+        can_replace = getattr(backend_cls, 'supports_replace', False)
+
+        # Preserve the current selection if caller didn't specify one.
+        if select is None:
+            select = self.duplicate_policy.currentData() or 'keep'
+
+        self.duplicate_policy.blockSignals(True)
+        self.duplicate_policy.clear()
+        self.duplicate_policy.addItem(_('Keep existing (skip)'), 'keep')
+        if can_replace:
+            self.duplicate_policy.addItem(
+                _('Replace existing (delete then upload)'), 'replace')
+            self.duplicate_policy.addItem(
+                _('Always ask before replacing'), 'ask')
+        # Select the requested value if available, else default to keep.
+        idx = self.duplicate_policy.findData(select)
+        self.duplicate_policy.setCurrentIndex(idx if idx >= 0 else 0)
+        self.duplicate_policy.blockSignals(False)
 
     def _update_default_label(self):
         self.default_label.setText(

@@ -5,6 +5,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-06-28
+
+### Added
+- Per-profile duplicate handling: when a book already exists on the server,
+  choose **Keep existing** (skip — the previous behaviour, still the default),
+  **Replace existing** (delete the existing copy, then upload the new one), or
+  **Always ask before replacing** (a single prompt before sending decides
+  whether duplicates are replaced or kept for that send).
+- The "Replace" and "Always ask" options are only offered for backends that
+  support deletion (a `supports_replace` capability on each driver). Calibre-web
+  supports it; the BookOrbit skeleton does not.
+
+### Changed
+- If a "Replace" cannot delete the existing copy, it falls back to keeping it
+  rather than failing — the existing copy is never lost. A permission error
+  (HTTP 403, e.g. the account lacks the Calibre-web "Delete books" permission)
+  disables Replace for the rest of the batch; other delete errors fall back for
+  just that book. All fallbacks are recorded in the job log.
+
 ## [1.4.0] - 2026-06-10
 
 ### Added
