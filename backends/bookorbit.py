@@ -35,7 +35,8 @@ import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
 
-from calibre_plugins.send_to_calibre_web.backends.base import Backend, BackendError
+from calibre_plugins.send_to_calibre_web.backends.base import (
+    AuthenticationError, Backend, BackendError, LookupResult, RemoteBook)
 
 
 class BookOrbitBackend(Backend):
@@ -50,8 +51,8 @@ class BookOrbitBackend(Backend):
     # Delete endpoint not yet verified; "Replace" disabled until then.
     supports_replace = False
 
-    def __init__(self, config, log=None):
-        Backend.__init__(self, config, log=log)
+    def __init__(self, config, log=None, shared_state=None):
+        Backend.__init__(self, config, log=log, shared_state=shared_state)
         self.server_url = config['server_url'].rstrip('/')
         self.username = config.get('username', '')
         self.password = config.get('password', '')
@@ -87,7 +88,7 @@ class BookOrbitBackend(Backend):
         return self._opener.open(req, timeout=timeout)
 
     # --- lifecycle ---
-    def connect(self):
+    def connect(self, validate=False):
         """Obtain a JWT and keep it for subsequent requests.
 
         # VERIFY (1): the login endpoint, request body, and where the token is
@@ -132,29 +133,43 @@ class BookOrbitBackend(Backend):
         except Exception as e:
             return False, f'Connection failed: {e}'
 
-    # --- duplicate check via OPDS (standard; should work once auth is known) ---
-    def book_exists(self, title, authors):
+    # --- duplicate lookup via OPDS (placeholder until BookOrbit API verified) ---
+    def find_book(self, identity):
         try:
-            # VERIFY: OPDS base path and search param. BookOrbit's OPDS supports
-            # search by author/series/ISBN; the title-search URL shape below
-            # follows the OPDS convention and may need the exact path adjusted.
-            query = urllib.parse.quote(title)
+            query = urllib.parse.quote(identity.title)
             url = f'{self.server_url}/opds/search?query={query}'   # VERIFY path
-            headers = {}
-            # VERIFY: whether OPDS uses the bearer token or basic auth.
-            with self._request('GET', url, headers=headers, timeout=15) as resp:
+            with self._request('GET', url, headers={}, timeout=15) as resp:
                 data = resp.read()
             root = ET.fromstring(data)
             ns = {'atom': 'http://www.w3.org/2005/Atom'}
-            tl = title.lower().strip()
+            wanted = identity.title.casefold().strip()
+            matches = []
             for entry in root.findall('atom:entry', ns):
                 t = entry.find('atom:title', ns)
-                if t is not None and t.text and t.text.lower().strip() == tl:
-                    return True
-            return False
-        except Exception as e:
-            self.log(f'Warning: duplicate check failed ({e}), uploading anyway.')
-            return False
+                if t is None or not t.text or t.text.casefold().strip() != wanted:
+                    continue
+                authors = []
+                for author in entry.findall('atom:author', ns):
+                    name = author.find('atom:name', ns)
+                    if name is not None and name.text:
+                        authors.append(name.text.strip())
+                matches.append(RemoteBook(None, t.text.strip(), tuple(authors), {}))
+            if not matches:
+                return LookupResult.not_found()
+            if len(matches) == 1:
+                return LookupResult.found(matches[0])
+            return LookupResult.ambiguous(
+                f'{len(matches)} BookOrbit entries share this title')
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise AuthenticationError('BookOrbit authentication failed (HTTP 401)')
+            self.log(f'Warning: duplicate lookup failed (HTTP {e.code}).')
+            return LookupResult.unknown(f'HTTP {e.code}')
+        except urllib.error.URLError:
+            raise
+        except ET.ParseError as e:
+            self.log(f'Warning: duplicate lookup failed ({e}).')
+            return LookupResult.unknown(f'invalid OPDS response: {e}')
 
     # --- upload ---
     def upload(self, filepath, filename):
@@ -215,9 +230,6 @@ class BookOrbitBackend(Backend):
         return f'HTTP {status}'
 
     # --- shelves: not enabled until the Collections write API is verified ---
-    def find_book_id(self, title):
-        raise NotImplementedError
-
     def ensure_shelf(self, shelf_name):
         raise NotImplementedError
 

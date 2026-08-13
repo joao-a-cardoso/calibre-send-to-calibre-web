@@ -264,11 +264,14 @@ class ConfigWidget(QWidget):
         if not (0 <= row < len(self._profiles)):
             return
         self._flush_current()
-        import copy
-        src = copy.deepcopy(self._profiles[row])
-        src['name'] = P.unique_name(self._profiles, src['name'] + ' copy')
-        self._profiles.append(src)
-        self._reload_list(select_name=src['name'])
+        src = self._profiles[row]
+        name = P.unique_name(self._profiles, src['name'] + ' copy')
+        # A duplicate is a new profile identity. Copy user settings, but give it
+        # a fresh internal id/revision so authenticated state is never shared
+        # accidentally with the source profile.
+        dup = P.new_profile(name, **{k: src.get(k) for k in P.PROFILE_FIELDS})
+        self._profiles.append(dup)
+        self._reload_list(select_name=dup['name'])
 
     def _set_default(self):
         row = self.list.currentRow()
