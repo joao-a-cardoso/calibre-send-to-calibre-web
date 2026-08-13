@@ -13,12 +13,13 @@ run and abort individual books if needed.
 - **Session login with CSRF** — authenticates the same way the web UI does, so the
   `/upload` endpoint actually accepts the books (Basic auth alone does not work for
   uploads in Calibre-web).
-- **Duplicate detection** — queries the server's OPDS catalog and skips books whose
-  title already exists, so re-sending a selection is safe.
+- **Duplicate detection** — queries the server's OPDS catalog and matches books using
+  title, author, and identifiers where available. Ambiguous or failed lookups are skipped
+  safely rather than guessed.
 - **Per-book jobs** — one Calibre job per book, each individually logged and
   abortable from the jobs panel.
-- **Session reuse** — a single login is shared across all the jobs in a batch, and
-  re-established automatically if it expires.
+- **Session reuse** — a single authenticated session is shared safely across jobs in a
+  batch, and re-established once automatically if it expires.
 - **Shelf assignment** — optionally add every sent book to a Calibre-web shelf,
   creating the shelf if it does not exist. Leave the shelf name empty to use the
   name of the currently open Calibre library. Books skipped as duplicates are still
@@ -87,9 +88,10 @@ With **Replace existing** selected, a book that already exists on the server is
 deleted and re-uploaded. On Calibre-web this needs the account to have the
 **Delete books** permission. If a delete is refused for lack of permission
 (HTTP 403), Replace is disabled for the rest of that send and the existing
-copies are kept; other delete errors fall back to keeping just that book. The
-existing copy is never lost to a failed replace, and every fallback is recorded
-in the job log.
+copies are kept; other delete errors fall back to keeping just that book. If
+deletion succeeds but the replacement upload later fails, the original server
+copy may already have been removed. Every fallback or replacement failure is
+recorded in the job log.
 
 ## Security note
 
@@ -174,7 +176,8 @@ driver:
 
 1. Fetches `/login`, extracts the `csrf_token`, and posts the credentials to obtain
    a session cookie.
-2. Checks `/opds/search?query=<title>` (Basic auth) to detect duplicates.
+2. Checks `/opds/search?query=<title>` (Basic auth) and uses available metadata to
+   resolve duplicates conservatively.
 3. Posts the book to `/upload` as `multipart/form-data` with the session cookie and
    CSRF token, verifying it was not bounced back to the login page.
 4. If shelf assignment is enabled, looks up or creates the shelf via
