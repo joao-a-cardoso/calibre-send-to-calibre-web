@@ -4,18 +4,21 @@
 
 """Named connection profiles for Send to Calibre-web.
 
-A profile is a self-contained config dict: its own backend, server, credentials,
-format preference, and shelf settings. The plugin stores a list of profiles plus
-the name of the active (default) one. This module owns the data model and the
-one-time migration from the original flat single-server prefs, so the UI and the
-action code never touch the raw pref keys directly.
+Profiles now carry an internal stable id and a connection revision.  Session
+reuse is keyed by those values rather than by credentials, and the revision is
+bumped only when connection-relevant settings change.
 """
 
-#: Keys that make up a profile (besides 'name').
+import uuid
+
 PROFILE_FIELDS = (
     'backend', 'server_url', 'username', 'password',
     'verify_ssl', 'format_order', 'add_to_shelf', 'shelf_name',
     'duplicate_policy',
+)
+
+CONNECTION_FIELDS = (
+    'backend', 'server_url', 'username', 'password', 'verify_ssl',
 )
 
 DEFAULTS = {
@@ -27,34 +30,64 @@ DEFAULTS = {
     'format_order': 'epub,mobi,azw3,fb2,pdf',
     'add_to_shelf': False,
     'shelf_name': '',
-    # 'keep' = skip if the book already exists (default, previous behaviour);
-    # 'replace' = delete the existing copy then upload the new one;
-    # 'ask' = prompt once before sending whether to replace duplicates.
     'duplicate_policy': 'keep',
 }
 
 
+def _new_id():
+    return uuid.uuid4().hex
+
+
+def _ensure_metadata(profile):
+    changed = False
+    if not profile.get('id'):
+        profile['id'] = _new_id()
+        changed = True
+    try:
+        revision = int(profile.get('connection_revision', 0))
+    except (TypeError, ValueError):
+        revision = 0
+    if profile.get('connection_revision') != revision:
+        profile['connection_revision'] = revision
+        changed = True
+    elif 'connection_revision' not in profile:
+        profile['connection_revision'] = revision
+        changed = True
+    return changed
+
+
 def new_profile(name, **overrides):
-    """Build a profile dict with defaults, applying any overrides."""
-    p = {'name': name}
+    p = {
+        'name': name,
+        'id': _new_id(),
+        'connection_revision': 0,
+    }
     p.update(DEFAULTS)
     for k, v in overrides.items():
-        if k in PROFILE_FIELDS or k == 'name':
+        if k in PROFILE_FIELDS or k in ('name', 'id', 'connection_revision'):
             p[k] = v
+    _ensure_metadata(p)
     return p
 
 
 def migrate(prefs):
-    """Ensure ``prefs`` holds a profiles list and an active_profile.
-
-    On first run after upgrading from the flat single-server layout, wrap the
-    existing settings into one profile named "Default". Idempotent: does nothing
-    if profiles already exist.
-    """
-    if prefs.get('profiles'):
+    """Ensure profile layout and internal metadata exist; idempotent."""
+    profiles = prefs.get('profiles') or []
+    if profiles:
+        changed = False
+        for profile in profiles:
+            changed = _ensure_metadata(profile) or changed
+            for key, default in DEFAULTS.items():
+                if key not in profile:
+                    profile[key] = default
+                    changed = True
+        if changed:
+            prefs['profiles'] = profiles
+        active = prefs.get('active_profile')
+        if not active or not any(p.get('name') == active for p in profiles):
+            prefs['active_profile'] = profiles[0]['name']
         return
 
-    # Pull whatever the old flat keys held (JSONConfig returns defaults if set).
     legacy = new_profile(
         'Default',
         backend=prefs.get('backend', DEFAULTS['backend']),
@@ -71,13 +104,11 @@ def migrate(prefs):
 
 
 def get_profiles(prefs):
-    """Return the list of profile dicts (migrating if needed)."""
     migrate(prefs)
     return prefs['profiles']
 
 
 def get_profile(prefs, name):
-    """Return the profile with ``name``, or None."""
     for p in get_profiles(prefs):
         if p.get('name') == name:
             return p
@@ -85,7 +116,6 @@ def get_profile(prefs, name):
 
 
 def get_active_profile(prefs):
-    """Return the active/default profile, falling back to the first one."""
     profiles = get_profiles(prefs)
     active = prefs.get('active_profile')
     p = get_profile(prefs, active) if active else None
@@ -96,13 +126,28 @@ def get_active_profile(prefs):
 
 
 def set_active_profile(prefs, name):
-    """Set the active/default profile by name, if it exists."""
     if get_profile(prefs, name) is not None:
         prefs['active_profile'] = name
 
 
+def _connection_changed(old, new):
+    return any(old.get(k, DEFAULTS.get(k)) != new.get(k, DEFAULTS.get(k))
+               for k in CONNECTION_FIELDS)
+
+
 def save_profiles(prefs, profiles, active_name=None):
-    """Persist the profiles list (and optionally the active name)."""
+    """Persist profiles and bump connection revisions when connection config changes."""
+    migrate(prefs)
+    old_by_id = {p.get('id'): p for p in (prefs.get('profiles') or []) if p.get('id')}
+
+    for profile in profiles:
+        _ensure_metadata(profile)
+        old = old_by_id.get(profile['id'])
+        if old is not None:
+            old_revision = int(old.get('connection_revision', 0) or 0)
+            profile['connection_revision'] = (
+                old_revision + 1 if _connection_changed(old, profile) else old_revision)
+
     prefs['profiles'] = profiles
     if active_name is not None:
         prefs['active_profile'] = active_name
@@ -111,7 +156,6 @@ def save_profiles(prefs, profiles, active_name=None):
 
 
 def profile_to_config(profile):
-    """Extract the backend config dict (server/creds) from a profile."""
     return {
         'server_url': (profile.get('server_url') or '').rstrip('/'),
         'username': profile.get('username', ''),
@@ -121,7 +165,6 @@ def profile_to_config(profile):
 
 
 def unique_name(profiles, base):
-    """Return a profile name not already in use, e.g. 'Copy', 'Copy 2'."""
     existing = {p.get('name') for p in profiles}
     if base not in existing:
         return base

@@ -4,12 +4,13 @@
 
 from calibre.customize import InterfaceActionBase
 
+
 class SendToCalibreWebPlugin(InterfaceActionBase):
-    name                   = 'Send to Calibre-web'
-    description            = 'Send selected books to a Calibre-web server'
-    supported_platforms    = ['windows', 'osx', 'linux']
-    author                 = 'João Cardoso and Claude'
-    version                = (1, 5, 0)
+    name = 'Send to Calibre-web'
+    description = 'Send selected books to a Calibre-web server'
+    supported_platforms = ['windows', 'osx', 'linux']
+    author = 'João Cardoso and Claude'
+    version = (1, 6, 0)
     minimum_calibre_version = (6, 0, 0)
 
     actual_plugin = 'calibre_plugins.send_to_calibre_web.action:SendToCalibreWebAction'
