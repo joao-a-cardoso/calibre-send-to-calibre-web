@@ -36,6 +36,7 @@ class SendBatchContext:
     def __init__(self):
         self.server_down = threading.Event()
         self.replace_disabled = threading.Event()
+        self.delete_disabled = threading.Event()
 
 
 # --- Shared authenticated state cache --------------------------------------
@@ -244,6 +245,64 @@ def send_one_book_job(backend_key, cfg, session_key, batch, identity, filepath,
     return result
 
 
+def remove_one_book_job(backend_key, cfg, session_key, batch, identity, log,
+                        abort, notifications):
+    """Remove one safely-resolved remote book; never touches the local copy."""
+    if batch.server_down.is_set():
+        log('Server previously unreachable in this remove operation — skipping.')
+        return 'skipped'
+    if batch.delete_disabled.is_set():
+        log('Remove disabled earlier in this operation (no delete permission) — skipping.')
+        return 'skipped'
+
+    try:
+        notifications.put((0.1, _('Logging in…')))
+        log(f'Book: {identity.title}')
+        backend = get_connected_backend(backend_key, cfg, session_key, log=log)
+
+        if abort.is_set():
+            log('Aborted.')
+            return 'skipped'
+
+        notifications.put((0.45, _('Finding book on server…')))
+        lookup = _lookup_or_skip(backend, identity, log)
+        if lookup.status in (LookupStatus.UNKNOWN, LookupStatus.AMBIGUOUS):
+            return 'skipped'
+        if lookup.status == LookupStatus.NOT_FOUND:
+            log('Book not found on server — nothing to remove.')
+            return 'not_found'
+
+        remote = lookup.book
+        if remote is None or remote.id is None:
+            log('Remote book has no resolvable server id — skipping for safety.')
+            return 'skipped'
+
+        if batch.delete_disabled.is_set():
+            log('Remove disabled earlier in this operation (no delete permission) — skipping.')
+            return 'skipped'
+
+        if abort.is_set():
+            log('Aborted.')
+            return 'skipped'
+
+        notifications.put((0.75, _('Removing from Calibre-Web…')))
+        try:
+            backend.delete_book(remote.id)
+        except PermissionDeniedError as e:
+            batch.delete_disabled.set()
+            log(f'Cannot remove ({e}). Remaining removals in this operation will be skipped.')
+            return 'skipped'
+
+        log(f'Removed from Calibre-Web (book {remote.id}).')
+        return 'removed'
+
+    except Exception as e:
+        if is_connection_error(e):
+            batch.server_down.set()
+            log('Server unreachable (connection error) — stopping remaining removals.')
+        raise
+
+
 class SendToCalibreWebAction(InterfaceAction):
 
     name = 'Send to Calibre-web'
@@ -272,6 +331,22 @@ class SendToCalibreWebAction(InterfaceAction):
             name = p['name']
             act = self.menu.addAction(('✓ ' if name == active else '    ') + name)
             act.triggered.connect(lambda checked=False, n=name: self.send_to_profile(n))
+
+        removable_profiles = []
+        for p in profiles:
+            backend_cls = get_backend_class(p.get('backend', DEFAULT_BACKEND))
+            if p.get('allow_delete', False) and getattr(backend_cls, 'supports_delete', False):
+                removable_profiles.append(p)
+
+        if removable_profiles:
+            self.menu.addSeparator()
+            remove_sub = QMenu(_('Remove from Calibre-Web'), self.menu)
+            for p in removable_profiles:
+                name = p['name']
+                a = remove_sub.addAction(('✓ ' if name == active else '    ') + name)
+                a.triggered.connect(
+                    lambda checked=False, n=name: self.remove_from_profile(n))
+            self.menu.addMenu(remove_sub)
 
         self.menu.addSeparator()
         sub = QMenu(_('Set default profile'), self.menu)
@@ -309,6 +384,91 @@ class SendToCalibreWebAction(InterfaceAction):
 
     def send_books(self):
         self.send_to_default()
+
+    def remove_from_profile(self, name):
+        profile = P.get_profile(prefs, name)
+        if profile is None:
+            return error_dialog(self.gui, _('Unknown profile'),
+                                _('Profile "%s" no longer exists.') % name, show=True)
+        self._remove_with_profile(profile)
+
+    def _remove_with_profile(self, profile):
+        backend_key = profile.get('backend', DEFAULT_BACKEND)
+        backend_cls = get_backend_class(backend_key)
+        if not profile.get('allow_delete', False):
+            return info_dialog(
+                self.gui, _('Remove disabled'),
+                _('Removing books is disabled for profile "%s".') % profile['name'],
+                show=True)
+        if not getattr(backend_cls, 'supports_delete', False):
+            return info_dialog(
+                self.gui, _('Remove not supported'),
+                _('The "%s" backend does not support removing books.') % backend_cls.name,
+                show=True)
+
+        rows = self.gui.library_view.selectionModel().selectedRows()
+        if not rows:
+            return error_dialog(self.gui, _('No books selected'),
+                                _('Please select one or more books first.'), show=True)
+
+        cfg = P.profile_to_config(profile)
+        session_key = (
+            profile.get('id') or profile['name'],
+            profile.get('connection_revision', 0),
+        )
+
+        if not cfg['server_url']:
+            return error_dialog(self.gui, _('Not configured'),
+                                _('Profile "%s" has no server URL.') % profile['name'], show=True)
+
+        db = self.gui.current_db.new_api
+        identities = []
+        for row in rows:
+            book_id = self.gui.library_view.model().id(row)
+            mi = db.get_metadata(book_id)
+            identities.append(BookIdentity(
+                mi.title,
+                tuple(mi.authors or ['Unknown']),
+                dict(getattr(mi, 'identifiers', {}) or {}),
+            ))
+
+        count = len(identities)
+        if not question_dialog(
+                self.gui, _('Remove from Calibre-Web?'),
+                _('Remove %d selected book(s) from "%s"?') % (count, profile['name']) +
+                '\n\n' +
+                _('Only unambiguous matches on the remote server will be removed.\n'
+                  'Your local Calibre books will not be changed.'),
+                show_copy_button=False):
+            return
+
+        try:
+            get_connected_backend(
+                backend_key, cfg, session_key, log=None, validate=True)
+        except AuthenticationError as e:
+            return error_dialog(self.gui, _('Login failed'),
+                                _('Could not log in to "%s":') % profile['name'] + f'\n\n{e}', show=True)
+        except BackendError as e:
+            return error_dialog(self.gui, _('Cannot remove books'),
+                                _('Could not prepare "%s" for removal:') % profile['name'] + f'\n\n{e}', show=True)
+        except Exception as e:
+            return error_dialog(self.gui, _('Cannot reach server'),
+                                _('Could not connect to "%s":') % profile['name'] + f'\n\n{e}', show=True)
+
+        batch = SendBatchContext()
+        for identity in identities:
+            job = ThreadedJob(
+                'remove_from_calibre_web',
+                _('Removing "%s" from %s') % (identity.title, profile['name']),
+                remove_one_book_job,
+                (backend_key, cfg, session_key, batch, identity),
+                {},
+                self.send_complete,
+            )
+            self.gui.job_manager.run_threaded_job(job)
+
+        self.gui.status_bar.show_message(
+            _('Queued %d book(s) for removal from %s') % (count, profile['name']), 3000)
 
     def _send_with_profile(self, profile):
         rows = self.gui.library_view.selectionModel().selectedRows()

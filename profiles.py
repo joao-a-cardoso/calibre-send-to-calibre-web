@@ -14,7 +14,7 @@ import uuid
 PROFILE_FIELDS = (
     'backend', 'server_url', 'username', 'password',
     'verify_ssl', 'format_order', 'add_to_shelf', 'shelf_name',
-    'duplicate_policy',
+    'duplicate_policy', 'allow_delete',
 )
 
 CONNECTION_FIELDS = (
@@ -31,6 +31,8 @@ DEFAULTS = {
     'add_to_shelf': False,
     'shelf_name': '',
     'duplicate_policy': 'keep',
+    # Explicit opt-in for exposing destructive Remove actions for this profile.
+    'allow_delete': False,
 }
 
 

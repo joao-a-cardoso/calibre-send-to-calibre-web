@@ -100,9 +100,11 @@ class ConfigWidget(QWidget):
         self.duplicate_policy = QComboBox(self)
         self.duplicate_policy.setMinimumWidth(fw)
         form.addRow(QLabel(_('If book already exists:')), self.duplicate_policy)
-        # The Replace option is only offered when the selected backend supports
-        # deletion. Rebuilt whenever the backend changes.
+        # Destructive options are capability-gated by the selected backend.
         self.backend.currentIndexChanged.connect(self._refresh_policy_options)
+        self.backend.currentIndexChanged.connect(self._refresh_delete_option)
+        self.allow_delete = QCheckBox(self)
+        form.addRow(QLabel(_('Allow removing books from server:')), self.allow_delete)
         self.add_to_shelf = QCheckBox(self)
         form.addRow(QLabel(_('Add sent books to a shelf:')), self.add_to_shelf)
         self.shelf_name = QLineEdit(self); self.shelf_name.setMinimumWidth(fw)
@@ -157,6 +159,7 @@ class ConfigWidget(QWidget):
             p['verify_ssl'] = self.verify_ssl.isChecked()
             p['format_order'] = str(self.format_order.text())
             p['duplicate_policy'] = self.duplicate_policy.currentData()
+            p['allow_delete'] = self.allow_delete.isChecked() if self.allow_delete.isEnabled() else False
             p['add_to_shelf'] = self.add_to_shelf.isChecked()
             p['shelf_name'] = str(self.shelf_name.text()).strip()
 
@@ -179,6 +182,7 @@ class ConfigWidget(QWidget):
         # Rebuild policy choices for this profile's backend, then select the
         # saved policy (falling back to 'keep' if it's no longer offered).
         self._refresh_policy_options(select=p.get('duplicate_policy', 'keep'))
+        self._refresh_delete_option(checked=p.get('allow_delete', False))
         self.add_to_shelf.setChecked(p.get('add_to_shelf', False))
         self.shelf_name.setText(p.get('shelf_name', ''))
         self.test_result.setText('')
@@ -207,6 +211,18 @@ class ConfigWidget(QWidget):
         idx = self.duplicate_policy.findData(select)
         self.duplicate_policy.setCurrentIndex(idx if idx >= 0 else 0)
         self.duplicate_policy.blockSignals(False)
+
+    def _refresh_delete_option(self, *args, checked=None):
+        """Enable remote-removal opt-in only for delete-capable backends."""
+        from calibre_plugins.send_to_calibre_web.backends import get_backend_class
+        key = self.backend.currentData() or 'calibre-web'
+        backend_cls = get_backend_class(key)
+        can_delete = getattr(backend_cls, 'supports_delete', False)
+        self.allow_delete.setEnabled(can_delete)
+        if not can_delete:
+            self.allow_delete.setChecked(False)
+        elif checked is not None:
+            self.allow_delete.setChecked(bool(checked))
 
     def _update_default_label(self):
         self.default_label.setText(

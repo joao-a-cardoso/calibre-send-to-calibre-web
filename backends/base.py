@@ -100,6 +100,9 @@ class Backend:
 
     supports_duplicate_check = True
     supports_shelves = True
+    # Standalone removal of a resolved remote book.  A backend may support
+    # duplicate lookup/upload without exposing a delete operation to users.
+    supports_delete = False
     supports_replace = True
 
     def __init__(self, config, log=None, shared_state=None):

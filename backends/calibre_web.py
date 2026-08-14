@@ -188,6 +188,7 @@ class CalibreWebBackend(Backend):
     name = 'Calibre-web'
     supports_duplicate_check = True
     supports_shelves = True
+    supports_delete = True
     supports_replace = True
 
     def __init__(self, config, log=None, shared_state=None):

@@ -48,6 +48,7 @@ class BookOrbitBackend(Backend):
     # Collections/Smart Scopes exist but their write API is unverified; ship
     # without shelf support first and enable once the endpoints are confirmed.
     supports_shelves = False
+    supports_delete = False
     # Delete endpoint not yet verified; "Replace" disabled until then.
     supports_replace = False
 
