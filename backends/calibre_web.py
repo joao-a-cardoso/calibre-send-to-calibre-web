@@ -86,6 +86,51 @@ def _entry_identifiers(entry):
     return out
 
 
+def _author_word_set(names):
+    """
+    Break one or more author name strings into a set of normalized words,
+    splitting on common multi-author separators (comma, semicolon, ampersand,
+    'and') as well as whitespace. Comparing at the word level — rather than
+    whole-string — tolerates servers or metadata sources that join multiple
+    co-authors differently (comma-separated on one side, concatenated with a
+    bare space and no separator at all on the other, possibly in a different
+    order). See _authors_plausibly_match.
+    """
+    words = set()
+    for name in names:
+        norm = _norm_text(name)
+        for part in re.split(r'[,;&]|\band\b', norm):
+            for word in part.split():
+                if word:
+                    words.add(word)
+    return words
+
+
+def _authors_plausibly_match(local_names, remote_names):
+    """
+    True if the local and remote author name lists plausibly refer to the
+    same people. Some servers (observed on Calibre-web, likely inherited from
+    the uploaded file's embedded metadata) concatenate multiple co-authors
+    into a single '<author><name>' field with no separator our tokenizer
+    recognizes (e.g. "Richard Dannatt Allen Packwood" for two distinct
+    authors) — while the local side may itself store the same two authors as
+    one comma-joined string, possibly in the opposite order. A plain set
+    comparison of whole author strings fails in both directions.
+
+    Compares at the individual-word level instead: the smaller side's word
+    set must be fully contained in the larger side's. This still requires an
+    exact match of every name word, so it will not falsely match unrelated
+    authors — it only tolerates differing separators and ordering, not fuzzy
+    name matching.
+    """
+    local_words = _author_word_set(local_names)
+    remote_words = _author_word_set(remote_names)
+    if not local_words or not remote_words:
+        return False
+    smaller, larger = sorted([local_words, remote_words], key=len)
+    return smaller.issubset(larger)
+
+
 class _CalibreWebSession:
     """Thread-safe authenticated browser session shared by jobs for one profile."""
 
@@ -288,7 +333,9 @@ class CalibreWebBackend(Backend):
         ns = {'atom': 'http://www.w3.org/2005/Atom'}
         wanted_title = _norm_text(identity.title)
         candidates = []
+        raw_entry_count = 0
         for entry in root.findall('atom:entry', ns):
+            raw_entry_count += 1
             title_elem = entry.find('atom:title', ns)
             if title_elem is None or not title_elem.text:
                 continue
@@ -317,6 +364,28 @@ class CalibreWebBackend(Backend):
             ))
 
         if not candidates:
+            # DIAGNOSTIC: this fires whenever a lookup finds no title match.
+            # If raw_entry_count > 0, the server DID return entries but none
+            # matched our normalized title — almost certainly a hidden
+            # character/whitespace difference (e.g. non-breaking space) that
+            # looks identical in logs. repr() below reveals it.
+            if raw_entry_count > 0:
+                self.log(
+                    f'DEBUG: OPDS search for {identity.title!r} returned '
+                    f'{raw_entry_count} entr{"y" if raw_entry_count == 1 else "ies"}, '
+                    f'but none matched. wanted={wanted_title!r}')
+                for entry in root.findall('atom:entry', ns):
+                    title_elem = entry.find('atom:title', ns)
+                    if title_elem is not None and title_elem.text:
+                        remote_norm = _norm_text(title_elem.text.strip())
+                        self.log(
+                            f'DEBUG:   remote title={title_elem.text.strip()!r} '
+                            f'normalized={remote_norm!r} '
+                            f'equal={remote_norm == wanted_title!r}')
+            else:
+                self.log(
+                    f'DEBUG: OPDS search for {identity.title!r} returned 0 entries '
+                    f'(query={query!r}).')
             return LookupResult.not_found()
 
         local_ids = _normalise_identifiers(identity.identifiers)
@@ -336,7 +405,7 @@ class CalibreWebBackend(Backend):
             author_matches = []
             for candidate in candidates:
                 remote_authors = {_norm_text(a) for a in candidate.authors if _norm_text(a)}
-                if remote_authors and local_authors.intersection(remote_authors):
+                if remote_authors and _authors_plausibly_match(identity.authors, candidate.authors):
                     author_matches.append(candidate)
             if len(author_matches) == 1:
                 return LookupResult.found(author_matches[0])
@@ -346,7 +415,11 @@ class CalibreWebBackend(Backend):
         if len(candidates) == 1:
             candidate = candidates[0]
             remote_authors = {_norm_text(a) for a in candidate.authors if _norm_text(a)}
-            if local_authors and remote_authors and not local_authors.intersection(remote_authors):
+            if (local_authors and remote_authors
+                    and not _authors_plausibly_match(identity.authors, candidate.authors)):
+                self.log(
+                    f'DEBUG: title matched but authors did not — '
+                    f'local={sorted(local_authors)!r} remote={sorted(remote_authors)!r}')
                 return LookupResult.not_found('same title exists, but author differs')
             return LookupResult.found(candidate)
 

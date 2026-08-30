@@ -124,15 +124,32 @@ def _lookup_or_skip(backend, identity, log):
 def _resolved_book_for_shelf(backend, identity, known_book, log):
     if known_book is not None and known_book.id is not None:
         return known_book
-    lookup = backend.find_book(identity)
-    if lookup.status == LookupStatus.FOUND and lookup.book and lookup.book.id is not None:
-        return lookup.book
+    # We just uploaded this book successfully, so it must exist on the server
+    # even if OPDS search doesn't reflect it instantly (Calibre-web can take a
+    # moment to index a newly-uploaded book before it's searchable). Retry a
+    # few times with a short delay before giving up.
+    import time
+    delays = (0, 1, 2, 4)  # seconds; first attempt has no delay
+    lookup = None
+    for i, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        lookup = backend.find_book(identity)
+        if lookup.status == LookupStatus.FOUND and lookup.book and lookup.book.id is not None:
+            if i > 0:
+                log(f'Found on server after {i} retr{"y" if i == 1 else "ies"} '
+                    f'(OPDS indexing lag).')
+            return lookup.book
+        if lookup.status == LookupStatus.AMBIGUOUS:
+            # Ambiguity won't resolve itself by waiting — stop retrying.
+            break
     if lookup.status == LookupStatus.AMBIGUOUS:
         log('Warning: uploaded book could not be identified uniquely for shelf assignment.')
     elif lookup.status == LookupStatus.UNKNOWN:
         log('Warning: uploaded book could not be looked up for shelf assignment.')
     else:
-        log('Warning: uploaded book was not found for shelf assignment.')
+        log('Warning: uploaded book was not found for shelf assignment '
+            '(server search may still be indexing it — try again shortly).')
     return None
 
 
