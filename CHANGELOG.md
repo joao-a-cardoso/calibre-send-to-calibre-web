@@ -5,6 +5,37 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-08-30
+
+### Fixed
+- Duplicate detection (Keep, Replace, Remove, and shelf assignment) could
+  wrongly report an existing book as not found when a co-authored book's
+  author names were joined differently by the server than by Calibre — e.g.
+  the server concatenating "Richard Dannatt" and "Allen Packwood" into one
+  field with no separator, while Calibre stored them as a single
+  comma-joined string in the opposite order. Author matching now compares
+  individual name words instead of whole strings, so differing separators
+  and ordering no longer cause a false "different book" result. Genuinely
+  different authors are still correctly distinguished.
+- The post-upload shelf-assignment lookup could report a freshly-uploaded
+  book as "not found" if it ran before the server finished indexing it. The
+  lookup now retries briefly (up to ~7 seconds) before giving up, since the
+  book is known to exist immediately after a successful upload.
+
+## [1.7.0] - 2026-08-XX
+
+### Added
+- Opt-in **Remove from Calibre-Web** support: selected books can be removed
+  from the server without touching the local Calibre library. Disabled by
+  default per profile (`allow_delete`), and only exposed for backends that
+  support deletion.
+- Removal is conservative by design: it uses the same structured remote-book
+  lookup as duplicate detection, and skips (rather than guesses) any book
+  whose match is ambiguous, not found, or otherwise unresolved — nothing is
+  ever removed on a best-effort guess.
+- Profiles with remote deletion disabled do not show a Remove option in the
+  toolbar menu.
+  s
 # [1.6.0] - 2026-08-13
 
 ### Changed
